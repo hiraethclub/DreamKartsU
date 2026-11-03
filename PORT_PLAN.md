@@ -490,4 +490,25 @@ At tags `m3`, `m5`, `m6`, `m7`:
   Emerald Beach (4th, 70.07 s) and Tsudoken Drift (1st, 104.98 s) to
   `DK AUTOTEST: PASS` in about 2 min 20 s. The "Terminated" lines it
   prints are the script ending each run after its verdict.
+- 2026-11-03: **M2 started.** The near-plane wedges are fixed, and the
+  M1 guess about them was wrong.
+  - `DKU_DUMP_FRAMES` (shim) writes a frame's TA batches to
+    `captures/host/<tag>-fNNNNN.ta`, numbered like the screenshots. A
+    dump of an affected frame showed the TA hands the backend the
+    missing road triangles. With the depth test off, llvmpipe draws
+    them: large coordinates were not the problem. The road (1/w 0.31)
+    lost to the sea under it (1/w 0.27) because `gl_FragDepth` was
+    written from a `noperspective` 1/w varying, which comes out wrong
+    on triangles the GPU clips.
+  - Fix: clip z is a constant `DEPTH_K` (1/128), so the rasteriser's
+    window depth is `DEPTH_K / w`, linear in screen space just as the
+    PVR's 1/w is. Depth clamp on, `glClipControl` zero-to-one (float
+    precision far away), no `gl_FragDepth`. Fog reads 1/w back from
+    `gl_FragCoord.z`. GX2 does the same through
+    `GX2SetRasterizerClipControlEx` with `halfZ` (M3). 1/w goes up to
+    60 (`flappy.c`), so the scale fits.
+  - `tools/contact_sheet.py` builds `captures/host/contact.png`. No
+    wedges in any of the 30 frames; GL autotest PASS on all 8 tracks.
+  - Found: two GL runs of the same track differ by frame 1800 (place,
+    lap times), so screenshots are not reproducible between runs. Next.
 

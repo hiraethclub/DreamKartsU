@@ -393,8 +393,50 @@ void pvr_dr_commit(void *addr) {
     }
 }
 
+/* DKU_DUMP_FRAMES="n1 n2 ..." writes those frames' triangles to
+   DKU_CAPTURE_DIR/DKU_SHOT_TAG-fNNNNN.ta for offline checks of what the
+   backend was given: per batch, its list, header, first, count, clip rows;
+   then the vertices as ta_vertex_t, host byte order. Frames count
+   pvr_wait_ready calls, as the GL backend's screenshots do, so a dump
+   and a screenshot with the same number show the same frame. */
+static unsigned long presents;
+
+static void maybe_dump(void) {
+    static int want[64], nwant = -1;
+    if(nwant < 0) {
+        nwant = 0;
+        const char *s = getenv("DKU_DUMP_FRAMES");
+        while(s && *s && nwant < 64) {
+            char *e;
+            long v = strtol(s, &e, 10);
+            if(e == s) break;
+            want[nwant++] = (int)v;
+            s = e;
+        }
+    }
+    int n = (int)presents + 1, hit = 0;
+    for(int i = 0; i < nwant; i++) hit |= want[i] == n;
+    if(!hit) return;
+    const char *dir = getenv("DKU_CAPTURE_DIR"), *tag = getenv("DKU_SHOT_TAG");
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s-f%05d.ta", dir ? dir : "captures/host", tag ? tag : "dku", n);
+    FILE *fp = fopen(path, "wb");
+    if(!fp) return;
+    for(int l = 0; l < TA_LISTS; l++)
+        for(int i = 0; i < frame.nbatches[l]; i++) {
+            const ta_batch_t *b = &frame.batches[l][i];
+            int32_t rec[6] = {l, b->hdr, b->first, b->count, b->clip_y0, b->clip_y1};
+            fwrite(rec, sizeof(rec), 1, fp);
+        }
+    int32_t end[6] = {-1, 0, 0, 0, 0, 0};
+    fwrite(end, sizeof(end), 1, fp);
+    fwrite(frame.verts, sizeof(ta_vertex_t), (size_t)frame.nverts, fp);
+    fclose(fp);
+}
+
 int pvr_scene_finish(void) {
     flush_strip();
+    maybe_dump();
     backend_draw(&frame, &st);
     size_t vtx = (size_t)frame.nverts * sizeof(ta_vertex_t);
     stats.vtx_buffer_used = vtx;
@@ -408,6 +450,7 @@ int pvr_scene_finish(void) {
 }
 
 int pvr_wait_ready(void) {
+    presents++;
     backend_present();
     return 0;
 }

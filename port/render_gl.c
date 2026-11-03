@@ -4,9 +4,13 @@
 
    - Lists draw in the PVR's order, OP, PT, TR, each in submission order
      (the game sets presort mode, so TR needs no sorting).
-   - Depth is the PVR's: 1/w, compared as the header says. The fragment
-     shader writes z / (1 + z) into a float depth buffer, which keeps
-     the order and the precision far away; cleared to 0 (infinitely far).
+   - Depth is the PVR's: 1/w, compared as the header says. The vertex
+     shader puts a constant DEPTH_K in clip z, so the rasteriser's own
+     window depth is DEPTH_K / w, linear in screen space as 1/w is, with
+     depth clamp on (nothing clips in z) and zero-to-one clip control
+     (float precision all the way out). Cleared to 0 (infinitely far).
+     Writing gl_FragDepth from an interpolated 1/w instead went wrong on
+     near-plane-clipped ground (the sea showed through the road).
    - Textures come from texture memory (pvr_shim_block): de-twiddled, with
      the KOS mip chain, cached by address and re-uploaded when
      pvr_txr_load bumps the block's generation.
@@ -45,30 +49,33 @@ static size_t vbo_cap;
 
 /* ---- shaders ---- */
 
+/* Window depth is DEPTH_K / w; 1/w reaches 60 (flappy.c's backdrop), and
+   a power of two keeps the scale exact. */
+#define DEPTH_K_GLSL "#define DEPTH_K (1.0 / 128.0)\n"
+
 static const char *vs_src =
     "#version 330 core\n"
+    DEPTH_K_GLSL
     "layout(location=0) in vec3 a_pos;\n"
     "layout(location=1) in vec2 a_uv;\n"
     "layout(location=2) in vec4 a_col;\n"   /* bytes b, g, r, a (ARGB word, little-endian) */
     "layout(location=3) in vec4 a_ofs;\n"
     "out vec2 v_uv;\n"
     "out vec4 v_col, v_ofs;\n"
-    "noperspective out float v_z;\n"
     "void main() {\n"
     "    float z = max(a_pos.z, 1e-7);\n"
     "    float w = 1.0 / z;\n"
-    "    gl_Position = vec4((a_pos.x / 320.0 - 1.0) * w, (1.0 - a_pos.y / 240.0) * w, 0.0, w);\n"
+    "    gl_Position = vec4((a_pos.x / 320.0 - 1.0) * w, (1.0 - a_pos.y / 240.0) * w, DEPTH_K, w);\n"
     "    v_uv = a_uv;\n"
     "    v_col = a_col.bgra;\n"
     "    v_ofs = a_ofs.bgra;\n"
-    "    v_z = z;\n"
     "}\n";
 
 static const char *fs_src =
     "#version 330 core\n"
+    DEPTH_K_GLSL
     "in vec2 v_uv;\n"
     "in vec4 v_col, v_ofs;\n"
-    "noperspective in float v_z;\n"
     "out vec4 o_col;\n"
     "uniform sampler2D u_tex;\n"
     "uniform bool u_tex_on, u_spec, u_use_alpha, u_tex_alpha;\n"
@@ -78,6 +85,7 @@ static const char *fs_src =
     "uniform float u_fog_table[129];\n"
     "uniform float u_fog_far;\n"
     "void main() {\n"
+    "    float v_z = gl_FragCoord.z / DEPTH_K;\n"   /* 1/w */
     "    vec4 c = v_col;\n"
     "    if(!u_use_alpha) c.a = 1.0;\n"
     "    if(u_tex_on) {\n"
@@ -99,7 +107,6 @@ static const char *fs_src =
     "    }\n"
     "    if(c.a < u_alpha_ref) discard;\n"
     "    o_col = clamp(c, 0.0, 1.0);\n"
-    "    gl_FragDepth = v_z / (1.0 + v_z);\n"
     "}\n";
 
 static const char *blit_vs =
@@ -421,6 +428,19 @@ void backend_init(void) {
         fprintf(stderr, "DKU GL: framebuffer incomplete\n");
         exit(1);
     }
+
+    /* See DEPTH_K: no clipping in z, window z = clip z / w. */
+    GLint next = 0;
+    bool clip_control = false;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &next);
+    for(GLint i = 0; i < next; i++)
+        clip_control |= !strcmp((const char *)glGetStringi(GL_EXTENSIONS, i), "GL_ARB_clip_control");
+    if(!clip_control) {
+        fprintf(stderr, "DKU GL: needs GL_ARB_clip_control\n");
+        exit(1);
+    }
+    glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+    glEnable(GL_DEPTH_CLAMP);
 
     static const uint32_t white = 0xffffffff;
     glGenTextures(1, &white_tex);
