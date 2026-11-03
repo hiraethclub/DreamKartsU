@@ -127,6 +127,12 @@ Constraints:
 
 ## 2. Architecture of the port
 
+**Two targets, one game (Aisling, 2026-11-03).** The Linux PC build is a
+maintained, playable target alongside the Wii U, not just a test rig.
+Every feature that is not Wii U hardware (GamePad screen, GX2) lands on
+both. `tools/test_host.sh` passing is part of every later milestone's
+check, and a playable PC build ships with each release.
+
 ```
 DreamKartsU/
   LICENSE                  MIT, Rich's copyright line kept, Aisling's added
@@ -320,7 +326,10 @@ Aisling has agreed it with Rich.**
 - README with build instructions, controls, credits, licences, and a clear
   "unofficial port, original by Rich Stokes" line.
 - GitHub Actions build using the `devkitpro/devkitppc` Docker image,
-  producing the `.wuhb` as an artifact.
+  producing the `.wuhb` as an artifact, plus a Linux PC build (and
+  `tools/test_host.sh` with the null backend) on every push.
+- PC release: settings for window size and fullscreen, key rebinding,
+  and music and saves working the same as on the Wii U.
 - Upstream sync procedure tested once: pull a newer upstream commit,
   re-run every test.
 
