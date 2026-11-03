@@ -1,0 +1,986 @@
+package lobby
+
+import (
+	"encoding/binary"
+	"fmt"
+	"log"
+	"math/rand"
+	"net/netip"
+	"sort"
+	"time"
+)
+
+// Timing.
+const (
+	PlayerTimeout    = 10 * time.Second
+	CountdownLen     = 4 * time.Second
+	FinishGrace      = 20 * time.Second // after the first finisher
+	MaxRaceLen       = 15 * time.Minute // safety net
+	ResultsLen       = 8 * time.Second
+	LobbyInterval    = 250 * time.Millisecond
+	RaceInterval     = 83 * time.Millisecond
+	BrowseTimeout    = 30 * time.Second // a console on the lobby list
+	MaxSessions      = 300
+	maxPacketsPerSec = 80
+)
+
+// Points for places 1-6.
+var PlacePoints = [MaxPlayers]uint16{10, 8, 6, 4, 2, 1}
+
+// Valid lap counts and limits the console offers.
+var validLaps = map[byte]bool{3: true, 5: true, 10: true}
+
+const (
+	maxTrack = 16 // tracks are validated loosely; the console clamps
+	ccCount  = 3
+	colours  = Colours
+	noLobby  = -1
+)
+
+// Player is one console session.
+type Player struct {
+	Token    uint32
+	Addr     netip.AddrPort
+	Name     string
+	Build    uint16
+	Lobby    int
+	Slot     int
+	JoinSeq  uint64
+	LastSeen time.Time
+	PingMs   uint16
+
+	Spectating bool // watching Lobby, not in a slot
+	Bot        bool // a demo-lobby bot: no address, never times out
+
+	Colour     byte
+	Custom     [CustomLen]byte // palette picks, shown when Colour is ColourCustom
+	Points     uint16
+	LastPlace  byte
+	StartNonce byte // newest seen from this console
+	nonceSeen  bool // StartNonce holds a wish from this console (its first wish is not a press)
+
+	// Race state.
+	Racing   bool
+	Grid     byte
+	Kart     [KartLen]byte
+	KartAt   time.Time
+	HasKart  bool
+	Finished bool
+	FinishMs uint32
+	Progress float64 // laps * 100000 + lap distance, for unfinished places
+
+	// Chat: the newest message id taken from this console and the packet it
+	// became, sent again when the console resends that id (its echo was
+	// lost); the token bucket that limits how fast it may talk.
+	ChatID     byte
+	ChatSeen   bool
+	ChatEcho   []byte
+	chatTokens float64
+	chatAt     time.Time
+
+	rateWindow time.Time
+	rateCount  int
+}
+
+// Lobby is one of the ten rooms.
+type Lobby struct {
+	ID        int
+	Slots     [MaxPlayers]*Player
+	Watchers  []*Player // spectators, any number (bounded by MaxSessions)
+	Demo      bool      // the bots' demo lobby
+	Leader    int       // slot, -1 when empty
+	Track     byte
+	Laps      byte
+	CC        byte
+	Items     bool // power-ups (the leader's choice; on by default)
+	State     byte
+	RaceID    byte
+	Host      *Player   // the leader who started the current race; a Free Roam session ends when they go
+	Green     time.Time // countdown target / race start
+	FirstFin  time.Time
+	ResultsTo time.Time
+	Nonce     byte // newest start nonce accepted from the leader
+	synced    bool // the current leader's nonce has been seen once
+	lastSent  time.Time
+	dirty     bool
+}
+
+// Server holds every session and lobby. It is not safe for concurrent use:
+// one goroutine feeds it packets and ticks.
+type Server struct {
+	Latest, Min uint16
+	Filter      *Filter // chat and name word filter; New leaves it empty
+	Lobbies     [MaxLobbies]*Lobby
+	players     map[uint32]*Player
+	joinSeq     uint64
+	epoch       time.Time
+	send        func(netip.AddrPort, []byte)
+	demo        *demoLobby
+	Logf        func(string, ...any)
+	rejected    map[string]time.Time // address+reason of each rejected HELLO logged, to log it once a minute
+	// RejectProto, when not 0, answers every HELLO with a REJECT stamped
+	// with that protocol byte, as a server that moved on to a newer
+	// protocol answers a console on this one. Testing only: the console's
+	// too-old screen has to come up on it (builds up to 17 dropped the
+	// packet and reported a lost connection instead).
+	RejectProto byte
+	// OnEvent, when set, hears about lobby joins and races starting (see
+	// Event), on the goroutine that feeds the server.
+	OnEvent func(Event, time.Time)
+}
+
+// rejectLogEvery is how often one address's rejected HELLO is logged for
+// one reason: a console keeps saying hello every half second for 12 s.
+const rejectLogEvery = time.Minute
+
+// New makes a server that writes packets through send.
+func New(send func(netip.AddrPort, []byte), now time.Time) *Server {
+	s := &Server{Latest: Build, Min: MinBuild, Filter: &Filter{}, players: map[uint32]*Player{}, epoch: now, Logf: log.Printf}
+	s.send = func(to netip.AddrPort, b []byte) {
+		if to.IsValid() { // bots have no address
+			send(to, b)
+		}
+	}
+	for i := range s.Lobbies {
+		// Race ids start somewhere random: a console remembers the race it
+		// last set up, and after a restart (every lobby back at race 1) a
+		// console that was in race 1 would take the new race 1 for the old
+		// one and stay in the room. Consoles from build 19 forget the id
+		// when they leave a lobby or the server; this covers older ones.
+		s.Lobbies[i] = &Lobby{ID: i, Leader: -1, Track: 0, Laps: 3, CC: 1, Items: true, RaceID: byte(rand.Intn(256))}
+	}
+	return s
+}
+
+func (s *Server) ms(now time.Time) uint32 { return uint32(now.Sub(s.epoch) / time.Millisecond) }
+
+// Players returns the number of live sessions.
+func (s *Server) Players() int { return len(s.players) }
+
+// Handle processes one datagram.
+func (s *Server) Handle(from netip.AddrPort, pkt []byte, now time.Time) {
+	if s.RejectProto != 0 && len(pkt) >= 4 && pkt[0] == 'D' && pkt[1] == 'K' && pkt[3] == TypeHello {
+		s.logReject(from, pkt[2], "", helloBuild(pkt), fmt.Sprintf("pretending to speak protocol %d", s.RejectProto), now)
+		b := append([]byte{'D', 'K', s.RejectProto, TypeReject}, 0, 0, 0, 0)
+		binary.LittleEndian.PutUint32(b[4:], s.ms(now))
+		b = append(b, RejectTooOld)
+		b = binary.LittleEndian.AppendUint16(b, s.Latest)
+		b = binary.LittleEndian.AppendUint16(b, s.Min)
+		s.send(from, b)
+		return
+	}
+	h, body, err := ParseClient(pkt)
+	if err != nil {
+		if len(pkt) >= 4 && pkt[0] == 'D' && pkt[1] == 'K' && pkt[2] != Proto && pkt[3] == TypeHello {
+			var body []byte
+			if len(pkt) >= clientHeaderLen {
+				body = pkt[clientHeaderLen:]
+			}
+			s.logReject(from, pkt[2], helloName(body), helloBuild(pkt), fmt.Sprintf("protocol %d, this server speaks %d", pkt[2], Proto), now)
+			s.reject(from, RejectTooOld, now)
+		}
+		return
+	}
+	p := s.players[h.Token]
+	if h.Type == TypeHello {
+		s.hello(from, h, body, p, now)
+		return
+	}
+	if p == nil {
+		s.reject(from, RejectSession, now)
+		return
+	}
+	if !s.allow(p, now) {
+		return
+	}
+	p.Addr = from // a redialled modem keeps its seat
+	p.LastSeen = now
+	s.updatePing(p, h, now)
+	switch h.Type {
+	case TypeList:
+		s.sendLobbies(p, now)
+	case TypeJoin:
+		if len(body) >= 2 && body[1]&JoinSpectate != 0 {
+			s.spectate(p, int(body[0]), now)
+		} else if len(body) >= 1 {
+			s.join(p, int(body[0]), now)
+		}
+	case TypeLeave:
+		s.leave(p, now)
+	case TypeWish:
+		if len(body) >= 5 {
+			s.wish(p, body, now)
+		}
+	case TypeKart:
+		if len(body) >= 1+KartLen {
+			s.kart(p, body, now)
+		}
+	case TypeChat:
+		if len(body) >= 2 {
+			s.chat(p, body, now)
+		}
+	case TypeRetire:
+		if len(body) >= 1 {
+			s.retire(p, body[0], now)
+		}
+	case TypePing:
+	}
+}
+
+func (s *Server) allow(p *Player, now time.Time) bool {
+	if now.Sub(p.rateWindow) >= time.Second {
+		p.rateWindow = now
+		p.rateCount = 0
+	}
+	p.rateCount++
+	return p.rateCount <= maxPacketsPerSec
+}
+
+func (s *Server) updatePing(p *Player, h ClientHeader, now time.Time) {
+	if h.Echo == 0 {
+		return
+	}
+	rtt := int64(s.ms(now)) - int64(h.Echo) - int64(h.Hold)
+	if rtt < 0 || rtt > 5000 {
+		return
+	}
+	if p.PingMs == 0 {
+		p.PingMs = uint16(rtt)
+	} else {
+		p.PingMs = uint16((int64(p.PingMs)*3 + rtt) / 4)
+	}
+}
+
+func (s *Server) hello(from netip.AddrPort, h ClientHeader, body []byte, p *Player, now time.Time) {
+	if h.Build < s.Min {
+		s.logReject(from, Proto, helloName(body), h.Build, fmt.Sprintf("build %d is below the minimum %d", h.Build, s.Min), now)
+		s.reject(from, RejectTooOld, now)
+		return
+	}
+	if len(body) < NameLen {
+		return
+	}
+	name := CleanName(body[:NameLen])
+	if name == "" || s.Filter.Censor(name) != name {
+		s.logReject(from, Proto, name, h.Build, "name refused", now)
+		s.reject(from, RejectBadName, now)
+		return
+	}
+	if p == nil {
+		if len(s.players) >= MaxSessions {
+			s.logReject(from, Proto, name, h.Build, fmt.Sprintf("server full (%d sessions)", len(s.players)), now)
+			s.reject(from, RejectFull, now)
+			return
+		}
+		p = &Player{Token: h.Token, Lobby: noLobby, Slot: -1}
+		s.players[h.Token] = p
+		s.Logf("hello %q build %d from %v (%d sessions)", name, h.Build, from, len(s.players))
+	}
+	p.Addr, p.Name, p.Build, p.LastSeen = from, name, h.Build, now
+	status := byte(0)
+	if h.Build < s.Latest {
+		status = 1
+	}
+	b := serverHeader(nil, TypeWelcome, s.ms(now))
+	b = append(b, status)
+	b = binary.LittleEndian.AppendUint16(b, s.Latest)
+	b = binary.LittleEndian.AppendUint16(b, s.Min)
+	b = append(b, MaxLobbies, MaxPlayers)
+	s.send(from, b)
+}
+
+// SeedRaces makes every lobby's next race id first+1 (the ids are random
+// otherwise). Testing only: a restarted server then repeats its race ids,
+// which is what a console must cope with.
+func (s *Server) SeedRaces(first byte) {
+	for _, l := range s.Lobbies {
+		l.RaceID = first
+	}
+}
+
+// helloName reads the name from a HELLO body, for the log only. The name
+// has followed the 18-byte header since protocol 1, so this also reads
+// hellos from other protocols.
+func helloName(body []byte) string {
+	if len(body) < NameLen {
+		return ""
+	}
+	return CleanName(body[:NameLen])
+}
+
+// helloBuild reads the build from a whole packet of any protocol, for the log.
+func helloBuild(pkt []byte) uint16 {
+	if len(pkt) < clientHeaderLen {
+		return 0
+	}
+	return binary.LittleEndian.Uint16(pkt[14:])
+}
+
+// logReject writes one line for a rejected HELLO, once per address and
+// reason every rejectLogEvery, so a console retrying twice a second shows
+// up once. Rejected hellos used to leave no trace, which made "lost
+// connection" reports from old builds impossible to tell from network
+// trouble.
+func (s *Server) logReject(from netip.AddrPort, proto byte, name string, build uint16, why string, now time.Time) {
+	if s.rejected == nil {
+		s.rejected = map[string]time.Time{}
+	}
+	key := from.Addr().String() + "|" + why
+	if at, ok := s.rejected[key]; ok && now.Sub(at) < rejectLogEvery {
+		return
+	}
+	if len(s.rejected) > 256 {
+		for k, at := range s.rejected {
+			if now.Sub(at) >= rejectLogEvery {
+				delete(s.rejected, k)
+			}
+		}
+	}
+	s.rejected[key] = now
+	s.Logf("rejected hello %q protocol %d build %d from %v: %s", name, proto, build, from, why)
+}
+
+func (s *Server) reject(to netip.AddrPort, reason byte, now time.Time) {
+	b := serverHeader(nil, TypeReject, s.ms(now))
+	b = append(b, reason)
+	b = binary.LittleEndian.AppendUint16(b, s.Latest)
+	b = binary.LittleEndian.AppendUint16(b, s.Min)
+	s.send(to, b)
+}
+
+func (s *Server) sendLobbies(p *Player, now time.Time) {
+	b := serverHeader(nil, TypeLobbies, s.ms(now))
+	b = append(b, MaxLobbies)
+	for _, l := range s.Lobbies {
+		n := l.count()
+		b = append(b, byte(n), l.State, l.Track)
+		leader := ""
+		if l.Leader >= 0 && l.Slots[l.Leader] != nil {
+			leader = l.Slots[l.Leader].Name
+		}
+		b = appendName(b, leader)
+	}
+	for _, l := range s.Lobbies {
+		b = append(b, l.watcherCount(), l.flags())
+	}
+	s.send(p.Addr, b)
+}
+
+func (l *Lobby) watcherCount() byte {
+	if len(l.Watchers) > 255 {
+		return 255
+	}
+	return byte(len(l.Watchers))
+}
+
+func (l *Lobby) flags() byte {
+	if l.Demo {
+		return LobbyDemo
+	}
+	return 0
+}
+
+// roam says whether the lobby's pick is the Night Meet lot: a Free Roam
+// session rather than a race. Nobody finishes (the finished flag is
+// ignored), there are no results or points and no time limit, and it goes
+// straight back to waiting when the leader who opened it retires or leaves
+// the lobby (or when nobody is left on it).
+func (l *Lobby) roam() bool { return l.Track == RoamTrack }
+
+// hostGone says whether the player who started the current race has
+// retired from it or left the lobby.
+func (l *Lobby) hostGone() bool {
+	return l.Host == nil || l.Host.Lobby != l.ID || !l.Host.Racing
+}
+
+// live says whether a race or session is on: counting down or racing.
+func (l *Lobby) live() bool { return l.State == StateCountdown || l.State == StateRacing }
+
+// freeGrid is the lowest grid slot no racer holds: on the lot, a free bay.
+func (l *Lobby) freeGrid() byte {
+	var used [MaxPlayers]bool
+	for _, q := range l.Slots {
+		if q != nil && q.Racing && int(q.Grid) < MaxPlayers {
+			used[q.Grid] = true
+		}
+	}
+	for i, u := range used {
+		if !u {
+			return byte(i)
+		}
+	}
+	return 0
+}
+
+// enterRoam puts p onto the lot of a Free Roam session in progress: a
+// latecomer to the lobby, or a player who backed out and wants back on.
+// Its kart joins the RACE relay as soon as it sends one.
+func (s *Server) enterRoam(l *Lobby, p *Player, how string) {
+	p.Racing, p.Grid = true, l.freeGrid()
+	p.Finished, p.FinishMs, p.HasKart, p.Progress, p.LastPlace = false, 0, false, 0, 0
+	l.dirty = true
+	s.Logf("lobby %d: %q %s the lot (free roam %d, bay %d)", l.ID, p.Name, how, l.RaceID, p.Grid)
+}
+
+func (l *Lobby) count() int {
+	n := 0
+	for _, p := range l.Slots {
+		if p != nil {
+			n++
+		}
+	}
+	return n
+}
+
+func (l *Lobby) colourFree(c byte, except *Player) bool {
+	if c == ColourCustom {
+		return true
+	}
+	for _, q := range l.Slots {
+		if q != nil && q != except && q.Colour == c {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) join(p *Player, id int, now time.Time) {
+	if id < 0 || id >= MaxLobbies {
+		return
+	}
+	if p.Lobby == id && !p.Spectating {
+		s.sendLobby(s.Lobbies[id], p, now) // a repeated JOIN gets its answer again
+		return
+	}
+	l := s.Lobbies[id]
+	if l.Demo && !p.Bot {
+		s.reject(p.Addr, RejectLobbyFul, now)
+		return
+	}
+	slot := -1
+	for i, q := range l.Slots {
+		if q == nil {
+			slot = i
+			break
+		}
+	}
+	if slot < 0 {
+		s.reject(p.Addr, RejectLobbyFul, now)
+		return
+	}
+	if p.Lobby != noLobby {
+		s.leave(p, now)
+	}
+	s.joinSeq++
+	p.Lobby, p.Slot, p.JoinSeq = id, slot, s.joinSeq
+	p.Points, p.LastPlace, p.Racing, p.Finished, p.HasKart = 0, 0, false, false, false
+	p.ChatSeen, p.ChatEcho = false, nil
+	if !l.colourFree(p.Colour, p) {
+		for c := byte(0); c < colours; c++ {
+			if l.colourFree(c, p) {
+				p.Colour = c
+				break
+			}
+		}
+	}
+	l.Slots[slot] = p
+	if l.Leader < 0 {
+		l.Leader, l.synced = slot, false
+	}
+	l.dirty = true
+	s.Logf("%q joined lobby %d slot %d", p.Name, id, slot)
+	if l.roam() && l.live() {
+		s.enterRoam(l, p, "dropped onto")
+	}
+	s.sendLobby(l, p, now)
+	if !p.Bot && !l.Demo && !IsTestName(p.Name) {
+		s.emit(Event{Kind: EventJoin, Lobby: id + 1, Name: p.Name, Players: names(l.Slots[:])}, now)
+	}
+}
+
+// spectate puts p in lobby id's audience: it gets the lobby and race state
+// but has no slot, kart or say in the race. Any number can watch, full or
+// not, including the demo lobby.
+func (s *Server) spectate(p *Player, id int, now time.Time) {
+	if id < 0 || id >= MaxLobbies {
+		return
+	}
+	l := s.Lobbies[id]
+	if p.Lobby == id && p.Spectating {
+		s.sendLobby(l, p, now)
+		return
+	}
+	if p.Lobby != noLobby {
+		s.leave(p, now)
+	}
+	p.Lobby, p.Slot, p.Spectating = id, -1, true
+	p.Racing, p.Finished, p.HasKart = false, false, false
+	l.Watchers = append(l.Watchers, p)
+	l.dirty = true
+	s.Logf("%q is watching lobby %d (%d watching)", p.Name, id, len(l.Watchers))
+	s.sendLobby(l, p, now)
+}
+
+func (s *Server) leave(p *Player, now time.Time) {
+	if p.Lobby == noLobby {
+		return
+	}
+	l := s.Lobbies[p.Lobby]
+	if p.Spectating {
+		for i, q := range l.Watchers {
+			if q == p {
+				l.Watchers = append(l.Watchers[:i], l.Watchers[i+1:]...)
+				break
+			}
+		}
+		p.Lobby, p.Slot, p.Spectating = noLobby, -1, false
+		l.dirty = true
+		s.Logf("%q stopped watching lobby %d", p.Name, l.ID)
+		return
+	}
+	l.Slots[p.Slot] = nil
+	s.Logf("%q left lobby %d", p.Name, l.ID)
+	if l.Host == p {
+		l.Host = nil // the session they opened ends, even if they are back before the next tick
+	}
+	if l.Leader == p.Slot {
+		l.Leader = -1
+		var best *Player
+		for _, q := range l.Slots {
+			if q != nil && (best == nil || q.JoinSeq < best.JoinSeq) {
+				best = q
+			}
+		}
+		if best != nil {
+			// The new leader's current nonce is not a press; their next is.
+			l.Leader, l.Nonce, l.synced = best.Slot, best.StartNonce, true
+		}
+	}
+	p.Lobby, p.Slot, p.Racing = noLobby, -1, false
+	if l.count() == 0 {
+		// The race id keeps counting: a console that leaves and comes
+		// back must not meet the id of the race it last set up.
+		*l = Lobby{ID: l.ID, Leader: -1, Laps: 3, CC: 1, Track: l.Track, Watchers: l.Watchers, Demo: l.Demo, RaceID: l.RaceID}
+	}
+	l.dirty = true
+}
+
+func (s *Server) wish(p *Player, b []byte, now time.Time) {
+	if p.Lobby == noLobby || p.Spectating {
+		return
+	}
+	l := s.Lobbies[p.Lobby]
+	colour, track, laps, cc, nonce := b[0], b[1], b[2], b[3], b[4]
+	items, hasItems := true, len(b) >= 6
+	if hasItems {
+		items = b[5]&WishItems != 0
+	}
+	if len(b) >= 6+CustomLen {
+		var custom [CustomLen]byte
+		copy(custom[:], b[6:6+CustomLen])
+		if custom != p.Custom {
+			p.Custom = custom
+			l.dirty = l.dirty || p.Colour == ColourCustom
+		}
+	}
+	if l.State == StateWaiting && (colour < colours || colour == ColourCustom) && colour != p.Colour && l.colourFree(colour, p) {
+		p.Colour = colour
+		l.dirty = true
+	}
+	if l.Leader != p.Slot {
+		// Start from the room during a Free Roam session: back onto the lot.
+		if p.nonceSeen && nonce != p.StartNonce && !p.Racing && l.roam() && l.live() {
+			s.enterRoam(l, p, "is back on")
+		}
+		p.StartNonce, p.nonceSeen = nonce, true
+		return
+	}
+	if !l.synced {
+		l.Nonce, l.synced, p.StartNonce = nonce, true, nonce
+		l.dirty = true
+	}
+	if l.State == StateWaiting {
+		if track < maxTrack && track != l.Track {
+			l.Track, l.dirty = track, true
+		}
+		if validLaps[laps] && laps != l.Laps {
+			l.Laps, l.dirty = laps, true
+		}
+		if cc < ccCount && cc != l.CC {
+			l.CC, l.dirty = cc, true
+		}
+		if hasItems && items != l.Items {
+			l.Items, l.dirty = items, true
+		}
+		if nonce != l.Nonce {
+			s.startRace(l, now) // alone is fine: practice until company arrives
+		}
+	}
+	l.Nonce = nonce
+	p.StartNonce, p.nonceSeen = nonce, true
+}
+
+func (s *Server) startRace(l *Lobby, now time.Time) {
+	var racers []*Player
+	for _, q := range l.Slots {
+		if q != nil {
+			racers = append(racers, q)
+		}
+	}
+	// Grid: most points at the back (a little handicap), then join order.
+	sort.SliceStable(racers, func(i, j int) bool {
+		if racers[i].Points != racers[j].Points {
+			return racers[i].Points < racers[j].Points
+		}
+		return racers[i].JoinSeq < racers[j].JoinSeq
+	})
+	l.RaceID++
+	if l.RaceID == 0 {
+		l.RaceID = 1
+	}
+	for i, q := range racers {
+		q.Racing, q.Grid = true, byte(i)
+		q.Finished, q.FinishMs, q.HasKart, q.Progress = false, 0, false, 0
+	}
+	l.State = StateCountdown
+	l.Green = now.Add(CountdownLen)
+	l.FirstFin = time.Time{}
+	l.Host = nil
+	if l.Leader >= 0 {
+		l.Host = l.Slots[l.Leader]
+	}
+	l.dirty = true
+	if l.roam() {
+		s.Logf("lobby %d free roam %d: %d on the lot, cc %d, items %v", l.ID, l.RaceID, len(racers), l.CC, l.Items)
+	} else {
+		s.Logf("lobby %d race %d: %d racers, track %d, %d laps, cc %d, items %v", l.ID, l.RaceID, len(racers), l.Track,
+			l.Laps, l.CC, l.Items)
+	}
+	if len(racers) >= 2 && !l.Demo && !anyTest(racers) {
+		s.emit(Event{Kind: EventRace, Lobby: l.ID + 1, Players: names(racers), Track: l.Track, Laps: l.Laps, CC: l.CC,
+			Items: l.Items}, now)
+	}
+}
+
+// retire takes p out of the race it is in (the console pressed Start and
+// chose to go back to the lobby room) without leaving the lobby: no place
+// or points this race, and its kart leaves everyone's RACE packets. The
+// console resends until the lobby state shows it not racing, so a repeat
+// is a no-op; an old race id is ignored.
+func (s *Server) retire(p *Player, raceID byte, now time.Time) {
+	if p.Lobby == noLobby || !p.Racing {
+		return
+	}
+	l := s.Lobbies[p.Lobby]
+	if raceID != l.RaceID || (l.State != StateCountdown && l.State != StateRacing) {
+		return
+	}
+	p.Racing, p.Finished, p.HasKart, p.LastPlace = false, false, false, 0
+	l.dirty = true
+	s.Logf("lobby %d: %q retired from race %d", l.ID, p.Name, l.RaceID)
+}
+
+func (s *Server) kart(p *Player, b []byte, now time.Time) {
+	if p.Lobby == noLobby || !p.Racing {
+		return
+	}
+	l := s.Lobbies[p.Lobby]
+	if b[0] != l.RaceID {
+		return
+	}
+	s.takeKart(l, p, b[1:1+KartLen], now, now)
+}
+
+// chat relays a player's message to everyone in its lobby, the sender
+// included (that echo is how the console knows it arrived), with the bad
+// words starred out. A watcher has no say. A console resends a message
+// until it sees its echo, so a repeat of the newest id gets the echo again
+// rather than a second copy; a message over the rate limit is dropped, and
+// the console's resends carry it in once the bucket refills.
+func (s *Server) chat(p *Player, b []byte, now time.Time) {
+	if p.Lobby == noLobby || p.Spectating {
+		return
+	}
+	id := b[0]
+	if p.ChatSeen && id == p.ChatID {
+		s.send(p.Addr, p.ChatEcho)
+		return
+	}
+	if !p.chatAt.IsZero() {
+		p.chatTokens += now.Sub(p.chatAt).Seconds()
+	} else {
+		p.chatTokens = ChatBurst
+	}
+	if p.chatTokens > ChatBurst {
+		p.chatTokens = ChatBurst
+	}
+	p.chatAt = now
+	if p.chatTokens < 1 {
+		return
+	}
+	text := s.Filter.Censor(CleanChat(b[1:]))
+	if text == "" {
+		return
+	}
+	p.chatTokens--
+	l := s.Lobbies[p.Lobby]
+	pkt := serverHeader(make([]byte, 0, 8+1+NameLen+2+ChatLen), TypeChatMsg, s.ms(now))
+	pkt = append(pkt, byte(p.Slot))
+	pkt = appendName(pkt, p.Name)
+	pkt = append(pkt, p.Colour, id)
+	pkt = appendChat(pkt, text)
+	p.ChatID, p.ChatSeen, p.ChatEcho = id, true, pkt
+	s.Logf("lobby %d chat %q: %s", l.ID, p.Name, text)
+	for _, q := range l.Slots {
+		if q != nil {
+			s.send(q.Addr, pkt)
+		}
+	}
+	for _, q := range l.Watchers {
+		s.send(q.Addr, pkt)
+	}
+}
+
+// takeKart records a racer's kart (the relayed bytes, flags to the mine)
+// as it was at time at. A shorter body is padded with zeros: no item, no
+// spear, no mine.
+func (s *Server) takeKart(l *Lobby, p *Player, k []byte, at, now time.Time) {
+	if l.State != StateCountdown && l.State != StateRacing && l.State != StateResults {
+		return
+	}
+	if len(k) > KartLen {
+		k = k[:KartLen]
+	}
+	p.Kart = [KartLen]byte{}
+	copy(p.Kart[:], k)
+	p.KartAt, p.HasKart = at, true
+	lap := k[13]
+	dist := binary.LittleEndian.Uint16(k[15:])
+	raceMs := binary.LittleEndian.Uint32(k[17:])
+	if !p.Finished {
+		p.Progress = float64(lap)*100000 + float64(dist)
+	}
+	if k[0]&KartFinished != 0 && !p.Finished && l.State == StateRacing && !l.roam() {
+		p.Finished, p.FinishMs = true, raceMs
+		if l.FirstFin.IsZero() {
+			l.FirstFin = now
+		}
+		l.dirty = true
+		s.Logf("lobby %d: %q finished in %d ms", l.ID, p.Name, raceMs)
+	}
+}
+
+// Tick advances timers and sends lobby state. Call it often (~every 20 ms).
+// Karts are not relayed here: call Relay every RaceInterval from a timer of
+// its own, so they go out on a steady beat that consoles time their kart
+// packets to (a 20 ms tick could only manage every 100 ms).
+func (s *Server) Tick(now time.Time) {
+	for tok, p := range s.players {
+		limit := PlayerTimeout
+		if p.Lobby == noLobby {
+			limit = BrowseTimeout
+		}
+		if now.Sub(p.LastSeen) > limit {
+			s.leave(p, now)
+			delete(s.players, tok)
+			s.Logf("%q timed out", p.Name)
+		}
+	}
+	s.tickDemo(now)
+	for _, l := range s.Lobbies {
+		s.advance(l, now)
+		if l.dirty || now.Sub(l.lastSent) >= LobbyInterval {
+			for _, p := range l.Slots {
+				if p != nil {
+					s.sendLobby(l, p, now)
+				}
+			}
+			for _, p := range l.Watchers {
+				s.sendLobby(l, p, now)
+			}
+			l.lastSent, l.dirty = now, false
+		}
+	}
+}
+
+// Relay sends every active lobby's karts to its consoles and watchers.
+func (s *Server) Relay(now time.Time) {
+	for _, l := range s.Lobbies {
+		if l.State != StateWaiting {
+			s.sendRace(l, now)
+		}
+	}
+}
+
+func (s *Server) racers(l *Lobby) []*Player {
+	var r []*Player
+	for _, p := range l.Slots {
+		if p != nil && p.Racing {
+			r = append(r, p)
+		}
+	}
+	return r
+}
+
+func (s *Server) advance(l *Lobby, now time.Time) {
+	switch l.State {
+	case StateCountdown:
+		if len(s.racers(l)) == 0 || (l.roam() && l.hostGone()) {
+			s.toWaiting(l)
+		} else if !now.Before(l.Green) {
+			l.State, l.dirty = StateRacing, true
+		}
+	case StateRacing:
+		r := s.racers(l)
+		if l.roam() {
+			// A Free Roam session: no finish, no results, no clock; over
+			// when the leader who opened it has gone, or everyone has.
+			if len(r) == 0 || l.hostGone() {
+				s.Logf("lobby %d free roam %d over", l.ID, l.RaceID)
+				s.toWaiting(l)
+			}
+			return
+		}
+		done := len(r) > 0
+		for _, p := range r {
+			if !p.Finished {
+				done = false
+			}
+		}
+		grace := !l.FirstFin.IsZero() && now.Sub(l.FirstFin) >= FinishGrace
+		if len(r) == 0 {
+			s.toWaiting(l) // everyone retired or left: no results to show
+		} else if done || grace || now.Sub(l.Green) > MaxRaceLen {
+			s.finishRace(l, now)
+		}
+	case StateResults:
+		if !now.Before(l.ResultsTo) {
+			s.toWaiting(l)
+		}
+	}
+}
+
+func (s *Server) finishRace(l *Lobby, now time.Time) {
+	r := s.racers(l)
+	sort.SliceStable(r, func(i, j int) bool {
+		a, b := r[i], r[j]
+		if a.Finished != b.Finished {
+			return a.Finished
+		}
+		if a.Finished {
+			return a.FinishMs < b.FinishMs
+		}
+		return a.Progress > b.Progress
+	})
+	for i, p := range r {
+		p.LastPlace = byte(i + 1)
+		if i < len(PlacePoints) {
+			p.Points += PlacePoints[i]
+		}
+	}
+	l.State, l.ResultsTo, l.dirty = StateResults, now.Add(ResultsLen), true
+	s.Logf("lobby %d race %d over", l.ID, l.RaceID)
+}
+
+func (s *Server) toWaiting(l *Lobby) {
+	l.State, l.Host, l.dirty = StateWaiting, nil, true
+	for _, p := range l.Slots {
+		if p != nil {
+			p.Racing, p.Finished, p.HasKart = false, false, false
+		}
+	}
+}
+
+func (s *Server) sendLobby(l *Lobby, p *Player, now time.Time) {
+	b := serverHeader(make([]byte, 0, 160), TypeLobby, s.ms(now))
+	you := byte(p.Slot)
+	if p.Spectating {
+		you = SpectatorSlot
+	}
+	b = append(b, byte(l.ID), l.State, you, byte(int8(l.Leader)), l.Track, l.Laps, l.CC, l.RaceID)
+	var t int32
+	if l.State == StateCountdown || l.State == StateRacing {
+		t = int32(l.Green.Sub(now) / time.Millisecond)
+	}
+	b = binary.LittleEndian.AppendUint32(b, uint32(t))
+	b = append(b, l.Nonce, byte(l.count()))
+	for _, q := range l.Slots {
+		if q == nil {
+			continue
+		}
+		var flags byte
+		if q.Slot == l.Leader {
+			flags |= 1
+		}
+		if q.Racing {
+			flags |= 2
+		}
+		if q.Finished {
+			flags |= 4
+		}
+		b = append(b, byte(q.Slot))
+		b = appendName(b, q.Name)
+		b = append(b, q.Colour, flags)
+		b = binary.LittleEndian.AppendUint16(b, q.PingMs)
+		b = binary.LittleEndian.AppendUint16(b, q.Points)
+		b = append(b, q.LastPlace, q.Grid)
+		b = append(b, q.Custom[:]...)
+	}
+	b = append(b, l.watcherCount(), l.flags())
+	// Racing: until the race ends after the first finisher. Results
+	// (build 21): until the lobby goes back to waiting.
+	var end time.Time
+	if l.State == StateRacing && !l.FirstFin.IsZero() {
+		end = l.FirstFin.Add(FinishGrace)
+	} else if l.State == StateResults {
+		end = l.ResultsTo
+	}
+	var left int32
+	if !end.IsZero() {
+		if left = int32(end.Sub(now) / time.Millisecond); left < 1 {
+			left = 1
+		}
+	}
+	b = binary.LittleEndian.AppendUint32(b, uint32(left))
+	var items byte
+	if l.Items {
+		items = 1
+	}
+	b = append(b, items)
+	s.send(p.Addr, b)
+}
+
+func (s *Server) sendRace(l *Lobby, now time.Time) {
+	r := s.racers(l)
+	b := serverHeader(make([]byte, 0, 160), TypeRace, s.ms(now))
+	n := 0
+	for _, p := range r {
+		if p.HasKart {
+			n++
+		}
+	}
+	b = append(b, l.RaceID, byte(n))
+	for _, p := range r {
+		if !p.HasKart {
+			continue
+		}
+		age := now.Sub(p.KartAt) / time.Millisecond
+		if age < 0 { // handled after this tick's time was taken
+			age = 0
+		}
+		if age > 65535 {
+			age = 65535
+		}
+		b = append(b, byte(p.Slot))
+		b = binary.LittleEndian.AppendUint16(b, uint16(age))
+		b = append(b, p.Kart[:]...)
+	}
+	for _, p := range l.Slots {
+		if p != nil {
+			s.send(p.Addr, b)
+		}
+	}
+	for _, p := range l.Watchers {
+		s.send(p.Addr, b)
+	}
+}

@@ -1,0 +1,844 @@
+package lobby
+
+import (
+	"encoding/binary"
+	"fmt"
+	"net/netip"
+	"strings"
+	"testing"
+	"time"
+)
+
+type sent struct {
+	to   netip.AddrPort
+	data []byte
+}
+
+type harness struct {
+	t         *testing.T
+	s         *Server
+	now       time.Time
+	out       []sent
+	lastRelay time.Time
+}
+
+func newHarness(t *testing.T) *harness {
+	h := &harness{t: t, now: time.Unix(1000, 0)}
+	h.s = New(func(to netip.AddrPort, b []byte) { h.out = append(h.out, sent{to, append([]byte(nil), b...)}) }, h.now)
+	h.s.Logf = func(string, ...any) {}
+	h.s.Filter = NewFilter(testWords)
+	return h
+}
+
+type client struct {
+	h     *harness
+	addr  netip.AddrPort
+	token uint32
+	build uint16
+	nonce byte
+}
+
+func (h *harness) client(port uint16, token uint32) *client {
+	return &client{h: h, addr: netip.AddrPortFrom(netip.MustParseAddr("10.0.0.1"), port), token: token, build: Build}
+}
+
+func (c *client) send(typ byte, body []byte) {
+	pkt := AppendClient(nil, ClientHeader{Type: typ, Token: c.token, Build: c.build}, body)
+	c.h.s.Handle(c.addr, pkt, c.h.now)
+}
+
+func (c *client) hello(name string) { c.send(TypeHello, appendName(nil, name)) }
+
+func (c *client) wish(colour, track, laps, cc byte) {
+	c.send(TypeWish, []byte{colour, track, laps, cc, c.nonce, WishItems})
+}
+
+// wishItems is a build 11 wish with the power-ups switch set as given.
+func (c *client) wishItems(colour, track, laps, cc byte, items bool) {
+	var f byte
+	if items {
+		f = WishItems
+	}
+	c.send(TypeWish, []byte{colour, track, laps, cc, c.nonce, f})
+}
+
+func (c *client) kart(raceID, flags, lap byte, dist uint16, raceMs uint32) {
+	b := make([]byte, 1+KartLen+4)
+	b[0], b[1], b[14] = raceID, flags, lap
+	binary.LittleEndian.PutUint16(b[16:], dist)
+	binary.LittleEndian.PutUint32(b[18:], raceMs)
+	c.send(TypeKart, b)
+}
+
+// last returns the newest packet of a type sent to c.
+func (c *client) last(typ byte) []byte {
+	for i := len(c.h.out) - 1; i >= 0; i-- {
+		o := c.h.out[i]
+		if o.to == c.addr && o.data[3] == typ {
+			return o.data
+		}
+	}
+	return nil
+}
+
+type lobbyView struct {
+	id, state, you, leader, track, laps, cc, raceID byte
+	players                                         []playerView
+}
+
+type playerView struct {
+	slot          byte
+	name          string
+	colour, flags byte
+	points        uint16
+	place         byte
+	custom        [CustomLen]byte
+}
+
+func (c *client) lobby() lobbyView {
+	b := c.last(TypeLobby)
+	if b == nil {
+		c.h.t.Fatalf("no LOBBY packet for %v", c.addr)
+	}
+	v := lobbyView{id: b[8], state: b[9], you: b[10], leader: b[11], track: b[12], laps: b[13], cc: b[14], raceID: b[15]}
+	n := int(b[21])
+	for i := 0; i < n; i++ {
+		e := b[22+i*PlayerLen:]
+		pv := playerView{slot: e[0], name: CleanName(e[1:12]), colour: e[12], flags: e[13],
+			points: binary.LittleEndian.Uint16(e[16:]), place: e[18]}
+		copy(pv.custom[:], e[20:23])
+		v.players = append(v.players, pv)
+	}
+	return v
+}
+
+// raceLeft reads the ms-until-the-race-ends after a LOBBY packet's players.
+func raceLeft(b []byte) int32 {
+	o := 22 + int(b[21])*PlayerLen + 2
+	return int32(binary.LittleEndian.Uint32(b[o:]))
+}
+
+// advance runs the server's 20 ms ticks and its kart relays up to d from now.
+func (h *harness) advance(d time.Duration) {
+	for end := h.now.Add(d); h.now.Before(end); {
+		h.now = h.now.Add(20 * time.Millisecond)
+		h.s.Tick(h.now)
+		if h.now.Sub(h.lastRelay) >= RaceInterval {
+			h.lastRelay = h.now
+			h.s.Relay(h.now)
+		}
+	}
+}
+
+func TestRaceLifecycle(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	a.hello("ann")
+	if w := a.last(TypeWelcome); w == nil || w[8] != 0 {
+		t.Fatalf("welcome %v", w)
+	}
+	b.hello("bob")
+	a.send(TypeJoin, []byte{3})
+	b.send(TypeJoin, []byte{3})
+	v := b.lobby()
+	if v.id != 3 || len(v.players) != 2 || v.leader != a.lobby().you {
+		t.Fatalf("lobby %+v", v)
+	}
+	if v.players[0].colour == v.players[1].colour {
+		t.Fatal("players share a colour")
+	}
+	// Only the leader sets the race; the first wish just syncs its nonce.
+	a.wish(0, 2, 5, 2)
+	b.wish(5, 1, 10, 0)
+	h.advance(300 * time.Millisecond)
+	v = b.lobby()
+	if v.track != 2 || v.laps != 5 || v.cc != 2 || v.state != StateWaiting {
+		t.Fatalf("settings %+v", v)
+	}
+	a.nonce++
+	a.wish(0, 2, 5, 2)
+	h.advance(40 * time.Millisecond)
+	if v = a.lobby(); v.state != StateCountdown {
+		t.Fatalf("not counting down: %+v", v)
+	}
+	h.advance(CountdownLen + 100*time.Millisecond)
+	if v = a.lobby(); v.state != StateRacing {
+		t.Fatalf("not racing: %+v", v)
+	}
+	a.kart(v.raceID, 0, 2, 100, 30000)
+	b.kart(v.raceID, 0, 1, 900, 30000)
+	h.advance(100 * time.Millisecond)
+	if r := b.last(TypeRace); r == nil || r[9] != 2 || len(r) != 10+2*(3+KartLen) {
+		t.Fatalf("race relay %v", r)
+	}
+	b.kart(v.raceID, KartFinished, 6, 0, 61000)
+	a.kart(v.raceID, KartFinished, 6, 0, 62500)
+	h.advance(100 * time.Millisecond)
+	v = a.lobby()
+	if v.state != StateResults {
+		t.Fatalf("not in results: %+v", v)
+	}
+	for _, p := range v.players {
+		want := map[string]uint16{"BOB": 10, "ANN": 8}[p.name]
+		if p.points != want {
+			t.Errorf("%s has %d points, want %d", p.name, p.points, want)
+		}
+	}
+	if left := raceLeft(a.last(TypeLobby)); left < 7500 || left > 8000 {
+		t.Fatalf("back to the lobby in %d ms, want about %v", left, ResultsLen)
+	}
+	h.advance(ResultsLen + 100*time.Millisecond)
+	if v = a.lobby(); v.state != StateWaiting {
+		t.Fatalf("not back in the lobby: %+v", v)
+	}
+}
+
+func TestItemsSwitch(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	a.hello("ann")
+	b.hello("bob")
+	a.send(TypeJoin, []byte{4})
+	b.send(TypeJoin, []byte{4})
+	h.advance(300 * time.Millisecond)
+	// Items are on until the leader says otherwise; a build 10 wish (no
+	// flags byte) leaves the switch alone.
+	if l := b.last(TypeLobby); l == nil || l[len(l)-1] != 1 {
+		t.Fatalf("items not on by default: %v", l)
+	}
+	a.send(TypeWish, []byte{0, 0, 3, 1, a.nonce})
+	h.advance(300 * time.Millisecond)
+	if l := b.last(TypeLobby); l[len(l)-1] != 1 {
+		t.Fatalf("a short wish changed the switch: %v", l)
+	}
+	b.wishItems(5, 0, 3, 1, false) // not the leader
+	h.advance(300 * time.Millisecond)
+	if l := a.last(TypeLobby); l[len(l)-1] != 1 {
+		t.Fatalf("a non-leader switched items off: %v", l)
+	}
+	a.wishItems(0, 0, 3, 1, false)
+	h.advance(300 * time.Millisecond)
+	if l := b.last(TypeLobby); l[len(l)-1] != 0 {
+		t.Fatalf("the leader could not switch items off: %v", l)
+	}
+	a.wishItems(0, 0, 3, 1, true)
+	h.advance(300 * time.Millisecond)
+	if l := b.last(TypeLobby); l[len(l)-1] != 1 {
+		t.Fatalf("the leader could not switch items back on: %v", l)
+	}
+	// Item, spear and mine bytes are relayed as sent.
+	a.nonce++
+	a.wishItems(0, 0, 3, 1, true)
+	h.advance(CountdownLen + 100*time.Millisecond)
+	v := a.lobby()
+	k := make([]byte, 1+KartLen+4)
+	k[0], k[1], k[14], k[15] = v.raceID, 2, 1, 0x02  // holding a spear
+	k[22] = 0x53                                     // spear seq 3, mine seq 5
+	k[23], k[24], k[25], k[26] = 0x10, 0x27, 0xf8, 1 // spear at 625 m, d -2, after slot 1
+	k[27], k[28], k[29] = 0xa0, 0x0f, 0x08           // mine at 250 m, d 2
+	a.send(TypeKart, k)
+	h.advance(100 * time.Millisecond)
+	r := b.last(TypeRace)
+	if r == nil || r[9] != 1 {
+		t.Fatalf("race relay %v", r)
+	}
+	got := r[10+3 : 10+3+KartLen]
+	if got[14] != 0x02 || got[21] != 0x53 || got[22] != 0x10 || got[23] != 0x27 || got[24] != 0xf8 || got[25] != 1 ||
+		got[26] != 0xa0 || got[27] != 0x0f || got[28] != 0x08 {
+		t.Fatalf("item bytes not relayed: %v", got)
+	}
+}
+
+func TestSoloStartAndLeaderHandover(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	a.hello("ann")
+	b.hello("bob")
+	a.send(TypeJoin, []byte{0})
+	a.wish(0, 0, 3, 1)
+	a.nonce++
+	a.wish(0, 0, 3, 1)
+	h.advance(40 * time.Millisecond)
+	// Alone is enough: a practice race while waiting for company.
+	if v := a.lobby(); v.state != StateCountdown || v.players[0].flags&2 == 0 {
+		t.Fatalf("did not start alone: %+v", v)
+	}
+	b.send(TypeJoin, []byte{0})
+	b.nonce = 7 // bob's own counter is not a press
+	b.wish(1, 0, 3, 1)
+	h.advance(40 * time.Millisecond)
+	if v := b.lobby(); v.state != StateCountdown || len(v.players) != 2 || v.players[1].flags&2 != 0 {
+		t.Fatalf("bob should sit out the running race: %+v", v)
+	}
+	a.send(TypeLeave, nil)
+	h.advance(100 * time.Millisecond)
+	v := b.lobby()
+	if v.leader != v.you {
+		t.Fatalf("bob did not take over: %+v", v)
+	}
+	if v.state != StateWaiting {
+		t.Fatalf("race should end when its only racer leaves: %+v", v)
+	}
+	b.wish(1, 0, 3, 1)
+	h.advance(40 * time.Millisecond)
+	if b.lobby().state != StateWaiting {
+		t.Fatal("handover started a race")
+	}
+}
+
+func TestRetireStaysInLobby(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	a.hello("ann")
+	b.hello("bob")
+	a.send(TypeJoin, []byte{3})
+	b.send(TypeJoin, []byte{3})
+	a.wish(0, 0, 3, 1)
+	b.wish(1, 0, 3, 1)
+	a.nonce++
+	a.wish(0, 0, 3, 1)
+	h.advance(CountdownLen + 100*time.Millisecond)
+	id := a.lobby().raceID
+	a.kart(id, 0, 1, 100, 5000)
+	b.kart(id, 0, 1, 50, 5000)
+	h.advance(RaceInterval + 20*time.Millisecond)
+	if r := b.last(TypeRace); r == nil || r[9] != 2 {
+		t.Fatalf("expected both karts relayed, got %v", r)
+	}
+	// A stale race id is ignored; the current one takes bob out.
+	b.send(TypeRetire, []byte{id + 1})
+	h.advance(40 * time.Millisecond)
+	if v := b.lobby(); v.players[1].flags&2 == 0 {
+		t.Fatalf("old race id retired bob: %+v", v)
+	}
+	b.send(TypeRetire, []byte{id})
+	b.send(TypeRetire, []byte{id}) // the console resends until the state shows it
+	h.advance(RaceInterval + 20*time.Millisecond)
+	v := b.lobby()
+	if v.state != StateRacing || len(v.players) != 2 || v.players[1].flags&2 != 0 || v.players[0].flags&2 == 0 {
+		t.Fatalf("bob should be in the lobby but out of the race: %+v", v)
+	}
+	if r := b.last(TypeRace); r == nil || r[9] != 1 || r[10] != 0 {
+		t.Fatalf("only ann's kart should be relayed now, got %v", r)
+	}
+	b.kart(id, 0, 2, 100, 20000) // a late kart from bob changes nothing
+	a.kart(id, KartFinished, 4, 0, 90000)
+	h.advance(time.Second)
+	v = a.lobby()
+	if v.state != StateResults {
+		t.Fatalf("race should end when the last racer finishes: %+v", v)
+	}
+	if v.players[0].place != 1 || v.players[0].points != 10 || v.players[1].place != 0 || v.players[1].points != 0 {
+		t.Fatalf("places/points %+v", v.players)
+	}
+	h.advance(ResultsLen + 100*time.Millisecond)
+	// Everyone retiring ends the race with no results.
+	a.nonce++
+	a.wish(0, 0, 3, 1)
+	h.advance(CountdownLen + 100*time.Millisecond)
+	id = a.lobby().raceID
+	a.send(TypeRetire, []byte{id})
+	b.send(TypeRetire, []byte{id})
+	h.advance(100 * time.Millisecond)
+	if v := a.lobby(); v.state != StateWaiting || v.players[0].points != 10 {
+		t.Fatalf("expected the lobby waiting with points kept: %+v", v)
+	}
+}
+
+// A rejected HELLO is logged (name, build, why) once a minute per address
+// and reason, whatever its protocol byte: a console retrying every half
+// second must not flood the journal, and an old build must be traceable.
+func TestRejectedHelloLogged(t *testing.T) {
+	h := newHarness(t)
+	var lines []string
+	h.s.Logf = func(f string, a ...any) { lines = append(lines, fmt.Sprintf(f, a...)) }
+
+	// Another protocol: the raw packet is parsed by hand.
+	old := h.client(1, 1)
+	pkt := AppendClient(nil, ClientHeader{Type: TypeHello, Token: 1, Build: 16}, appendName(nil, "COMIC"))
+	pkt[2] = Proto - 1
+	for i := 0; i < 5; i++ {
+		h.s.Handle(old.addr, pkt, h.now)
+		h.now = h.now.Add(500 * time.Millisecond)
+	}
+	if r := old.last(TypeReject); r == nil || r[8] != RejectTooOld {
+		t.Fatalf("reject %v", r)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], `rejected hello "COMIC" protocol 3 build 16 from 10.0.0.1:1`) || !strings.Contains(lines[0], "protocol 3") {
+		t.Fatalf("log %q", lines)
+	}
+
+	// Too old on our protocol: a different reason, so a new line.
+	h.s.Min = 10
+	oldb := h.client(2, 2)
+	oldb.build = 9
+	oldb.hello("OLDIE")
+	oldb.hello("OLDIE")
+	if len(lines) != 2 || !strings.Contains(lines[1], `"OLDIE" protocol 4 build 9`) || !strings.Contains(lines[1], "below the minimum 10") {
+		t.Fatalf("log %q", lines)
+	}
+
+	// After a minute the same console is logged again.
+	h.now = h.now.Add(rejectLogEvery)
+	oldb.hello("OLDIE")
+	if len(lines) != 3 {
+		t.Fatalf("log %q", lines)
+	}
+
+	// A refused name.
+	bad := h.client(3, 3)
+	bad.hello("BLORP")
+	if len(lines) != 4 || !strings.Contains(lines[3], "name refused") {
+		t.Fatalf("log %q", lines)
+	}
+}
+
+// A lobby's race ids go on counting after it empties, and do not start at
+// 1 on a fresh server: a console remembers the id of the race it set up
+// and would sit out a new race carrying the same id.
+func TestRaceIDsKeepCounting(t *testing.T) {
+	startAlone := func(h *harness, c *client) byte {
+		c.hello("ALONE")
+		c.send(TypeJoin, []byte{0, 0})
+		h.advance(50 * time.Millisecond)
+		c.wish(0, 0, 3, 1) // syncs the nonce
+		h.advance(50 * time.Millisecond)
+		c.nonce++
+		c.wish(0, 0, 3, 1) // the press
+		h.advance(50 * time.Millisecond)
+		v := c.lobby()
+		if v.state != StateCountdown {
+			t.Fatalf("not counting down: %+v", v)
+		}
+		return v.raceID
+	}
+	allZero := true
+	for i := 0; i < 8; i++ {
+		if newHarness(t).s.Lobbies[0].RaceID != 0 {
+			allZero = false
+		}
+	}
+	if allZero {
+		t.Fatalf("eight fresh servers all began lobby 0 at race 1")
+	}
+	h := newHarness(t)
+	h.s.Lobbies[0].RaceID = 0 // as an emptied lobby once was
+	a := h.client(1, 1)
+	first := startAlone(h, a)
+	if first != 1 {
+		t.Fatalf("first race id %d", first)
+	}
+	a.send(TypeLeave, nil)
+	h.advance(50 * time.Millisecond)
+	if h.s.Lobbies[0].State != StateWaiting {
+		t.Fatalf("lobby not waiting after its only racer left")
+	}
+	a.send(TypeJoin, []byte{0, 0})
+	h.advance(50 * time.Millisecond)
+	a.wish(0, 0, 3, 1)
+	h.advance(50 * time.Millisecond)
+	a.nonce++
+	a.wish(0, 0, 3, 1)
+	h.advance(50 * time.Millisecond)
+	if got := a.lobby().raceID; got == first {
+		t.Fatalf("race id %d repeated after leaving and rejoining", got)
+	}
+}
+
+// -reject-proto: every HELLO, on our protocol or not, gets a too-old REJECT
+// stamped with the pretend protocol, and no session.
+func TestRejectProto(t *testing.T) {
+	h := newHarness(t)
+	h.s.RejectProto = 9
+	c := h.client(1, 1)
+	c.hello("NEW")
+	r := c.last(TypeReject)
+	if r == nil || r[2] != 9 || r[8] != RejectTooOld || binary.LittleEndian.Uint16(r[9:]) != Build {
+		t.Fatalf("reject %v", r)
+	}
+	if h.s.Players() != 0 {
+		t.Fatalf("a rejected hello made a session")
+	}
+}
+
+// -race-seed: every lobby's first race is the seed plus one.
+func TestSeedRaces(t *testing.T) {
+	h := newHarness(t)
+	h.s.SeedRaces(40)
+	c := h.client(1, 1)
+	c.hello("ALONE")
+	c.send(TypeJoin, []byte{3, 0})
+	h.advance(50 * time.Millisecond)
+	c.wish(0, 0, 3, 1)
+	h.advance(50 * time.Millisecond)
+	c.nonce++
+	c.wish(0, 0, 3, 1)
+	h.advance(50 * time.Millisecond)
+	if v := c.lobby(); v.state != StateCountdown || v.raceID != 41 {
+		t.Fatalf("lobby %+v", v)
+	}
+}
+
+func TestOldClientRejected(t *testing.T) {
+	h := newHarness(t)
+	h.s.Min = 5
+	c := h.client(1, 1)
+	c.build = 4
+	c.hello("old")
+	r := c.last(TypeReject)
+	if r == nil || r[8] != RejectTooOld {
+		t.Fatalf("reject %v", r)
+	}
+	c.build = 5
+	h.s.Latest = 6
+	c.hello("newish")
+	if w := c.last(TypeWelcome); w == nil || w[8] != 1 {
+		t.Fatalf("expected an update-available welcome, got %v", w)
+	}
+}
+
+func TestUnfinishedPlacesAndTimeout(t *testing.T) {
+	h := newHarness(t)
+	a, b, c := h.client(1, 1), h.client(2, 2), h.client(3, 3)
+	for i, cl := range []*client{a, b, c} {
+		cl.hello([]string{"a", "b", "c"}[i])
+		cl.send(TypeJoin, []byte{9})
+		cl.wish(byte(i), 0, 3, 1)
+	}
+	a.nonce++
+	a.wish(0, 0, 3, 1)
+	h.advance(CountdownLen + 100*time.Millisecond)
+	id := a.lobby().raceID
+	if left := raceLeft(a.last(TypeLobby)); left != 0 {
+		t.Fatalf("race end announced before anyone finished: %d ms", left)
+	}
+	a.kart(id, KartFinished, 4, 0, 90000)
+	b.kart(id, 0, 3, 500, 90000)
+	c.kart(id, 0, 3, 100, 90000)
+	h.advance(5 * time.Second)
+	want := int32((FinishGrace - 5*time.Second) / time.Millisecond)
+	if left := raceLeft(b.last(TypeLobby)); left < want-500 || left > want+500 {
+		t.Fatalf("race ends in %d ms, want about %d ms", left, want)
+	}
+	// Keep b and c alive through the grace period.
+	for i := 0; i < 32; i++ {
+		h.advance(time.Second)
+		b.send(TypePing, nil)
+		c.send(TypePing, nil)
+		a.send(TypePing, nil)
+	}
+	places := map[string]byte{}
+	for _, p := range a.lobby().players {
+		places[p.name] = p.place
+	}
+	if places["A"] != 1 || places["B"] != 2 || places["C"] != 3 {
+		t.Fatalf("places %v", places)
+	}
+	// c goes silent and is dropped.
+	h.advance(PlayerTimeout + 2*time.Second)
+	if n := len(h.s.players); n != 0 {
+		t.Fatalf("%d sessions left after everyone went quiet", n)
+	}
+}
+
+// Custom colours: colour 8 carries three palette picks that the lobby echoes
+// to everyone, any number of players may pick it, and a wish without the
+// picks (an older bot) leaves them alone.
+func TestCustomColours(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	a.hello("ann")
+	b.hello("bob")
+	a.send(TypeJoin, []byte{4})
+	b.send(TypeJoin, []byte{4})
+	a.send(TypeWish, []byte{ColourCustom, 0, 3, 1, a.nonce, WishItems, 3, 0, 15})
+	b.send(TypeWish, []byte{ColourCustom, 0, 3, 1, b.nonce, WishItems, 2, 3, 4})
+	h.advance(300 * time.Millisecond)
+	v := b.lobby()
+	if len(v.players) != 2 || v.players[0].colour != ColourCustom || v.players[1].colour != ColourCustom {
+		t.Fatalf("custom colours not taken: %+v", v)
+	}
+	if v.players[0].custom != [CustomLen]byte{3, 0, 15} || v.players[1].custom != [CustomLen]byte{2, 3, 4} {
+		t.Fatalf("picks not echoed: %+v", v)
+	}
+	if tail := b.last(TypeLobby)[22+2*PlayerLen:]; len(tail) != 7 {
+		t.Fatalf("lobby tail after %d-byte players: %v", PlayerLen, tail)
+	}
+	// Repainting while custom shows up; a preset again, with a short wish, keeps the picks.
+	a.send(TypeWish, []byte{ColourCustom, 0, 3, 1, a.nonce, WishItems, 7, 7, 7})
+	h.advance(300 * time.Millisecond)
+	if v = b.lobby(); v.players[0].custom != [CustomLen]byte{7, 7, 7} {
+		t.Fatalf("repaint not echoed: %+v", v)
+	}
+	a.wish(1, 0, 3, 1)
+	a.send(TypeWish, []byte{9, 0, 3, 1, a.nonce, WishItems, 1, 1, 1}) // no such colour
+	h.advance(300 * time.Millisecond)
+	if v = b.lobby(); v.players[0].colour != 1 || v.players[0].custom != [CustomLen]byte{1, 1, 1} {
+		t.Fatalf("preset after custom: %+v", v)
+	}
+}
+
+// keepAlive moves time on in 5 s steps with every client pinging, so the
+// session timeout never fires during a long wait.
+func (h *harness) keepAlive(d time.Duration, cs ...*client) {
+	for end := h.now.Add(d); h.now.Before(end); {
+		h.advance(5 * time.Second)
+		for _, c := range cs {
+			c.send(TypePing, nil)
+		}
+	}
+}
+
+// openRoam has leader a (with b in the lobby) pick the Night Meet lot and
+// start, and runs the countdown out.
+func openRoam(t *testing.T, h *harness, a, b *client) byte {
+	a.hello("ann")
+	b.hello("bob")
+	a.send(TypeJoin, []byte{0})
+	b.send(TypeJoin, []byte{0})
+	a.wish(0, RoamTrack, 3, 1)
+	h.advance(300 * time.Millisecond)
+	if v := a.lobby(); v.track != RoamTrack || v.leader != 0 {
+		t.Fatalf("lobby before the start: %+v", v)
+	}
+	a.nonce++
+	a.wish(0, RoamTrack, 3, 1)
+	h.advance(CountdownLen + 100*time.Millisecond)
+	v := a.lobby()
+	if v.state != StateRacing {
+		t.Fatalf("state %d after the countdown, want racing", v.state)
+	}
+	return v.raceID
+}
+
+func TestRoamSession(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	id := openRoam(t, h, a, b)
+	// A kart that says it finished ends nothing, and no clock starts.
+	a.kart(id, 2, 1, 100, 1000)
+	b.kart(id, KartFinished|2, 4, 0, 60000)
+	h.keepAlive(FinishGrace+2*time.Second, a, b)
+	if v := a.lobby(); v.state != StateRacing {
+		t.Fatalf("state %d after a finished flag and the grace, want racing", v.state)
+	}
+	if left := raceLeft(a.last(TypeLobby)); left != 0 {
+		t.Errorf("race end clock %d ms, want none", left)
+	}
+	// Nor does the race length safety net.
+	h.keepAlive(MaxRaceLen+time.Minute, a, b)
+	if v := a.lobby(); v.state != StateRacing {
+		t.Fatalf("state %d after %v, want racing", v.state, MaxRaceLen)
+	}
+	// Bob backing out leaves it open for Ann.
+	b.send(TypeRetire, []byte{id})
+	h.advance(300 * time.Millisecond)
+	v := a.lobby()
+	if v.state != StateRacing || v.players[1].flags&2 != 0 {
+		t.Fatalf("after bob retired: %+v", v)
+	}
+	// Ann, who opened it, backing out closes it: straight to waiting, no
+	// results, no places, no points.
+	a.send(TypeRetire, []byte{id})
+	h.advance(300 * time.Millisecond)
+	v = a.lobby()
+	if v.state != StateWaiting {
+		t.Fatalf("state %d after the leader retired, want waiting", v.state)
+	}
+	for _, p := range v.players {
+		if p.points != 0 || p.place != 0 || p.flags&2 != 0 {
+			t.Errorf("%s after the session: points %d place %d flags %d", p.name, p.points, p.place, p.flags)
+		}
+	}
+	if h.s.Lobbies[0].Host != nil {
+		t.Error("host still set after the session")
+	}
+}
+
+func TestRoamEndsWhenLeaderLeaves(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	id := openRoam(t, h, a, b)
+	b.kart(id, 2, 1, 100, 1000)
+	// Bob leaving changes nothing for Ann.
+	c := h.client(3, 33)
+	c.hello("cat")
+	c.send(TypeJoin, []byte{0})
+	h.advance(300 * time.Millisecond)
+	c.send(TypeLeave, nil)
+	h.advance(300 * time.Millisecond)
+	if v := a.lobby(); v.state != StateRacing {
+		t.Fatalf("state %d after a latecomer left, want racing", v.state)
+	}
+	// Ann leaving the lobby ends it; Bob leads the waiting lobby with no points.
+	a.send(TypeLeave, nil)
+	h.advance(300 * time.Millisecond)
+	v := b.lobby()
+	if v.state != StateWaiting || v.leader != 1 || len(v.players) != 1 || v.players[0].points != 0 {
+		t.Fatalf("after the leader left: %+v", v)
+	}
+}
+
+func TestRoamLeaderLeavingInCountdown(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	a.hello("ann")
+	b.hello("bob")
+	a.send(TypeJoin, []byte{0})
+	b.send(TypeJoin, []byte{0})
+	a.wish(0, RoamTrack, 3, 1)
+	h.advance(300 * time.Millisecond)
+	a.nonce++
+	a.wish(0, RoamTrack, 3, 1)
+	h.advance(time.Second)
+	if v := b.lobby(); v.state != StateCountdown {
+		t.Fatalf("state %d, want countdown", v.state)
+	}
+	a.send(TypeRetire, []byte{b.lobby().raceID})
+	h.advance(300 * time.Millisecond)
+	if v := b.lobby(); v.state != StateWaiting {
+		t.Fatalf("state %d after the leader retired in the countdown, want waiting", v.state)
+	}
+}
+
+// A race on any other track still finishes and scores as before, so the
+// session rules are the lot's alone.
+func TestRoamRulesOnlyOnTheLot(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	a.hello("ann")
+	b.hello("bob")
+	a.send(TypeJoin, []byte{0})
+	b.send(TypeJoin, []byte{0})
+	a.wish(0, RoamTrack, 3, 1)
+	h.advance(300 * time.Millisecond)
+	a.wish(0, 2, 3, 1) // changed their mind: Palm Harbour
+	h.advance(300 * time.Millisecond)
+	a.nonce++
+	a.wish(0, 2, 3, 1)
+	h.advance(CountdownLen + 100*time.Millisecond)
+	id := a.lobby().raceID
+	a.kart(id, KartFinished|2, 4, 0, 50000)
+	b.kart(id, KartFinished|2, 4, 0, 51000)
+	h.advance(300 * time.Millisecond)
+	v := a.lobby()
+	if v.state != StateResults || v.players[0].points != 10 || v.players[1].points != 8 {
+		t.Fatalf("a race after a roam pick: %+v", v)
+	}
+}
+
+// raceCount reads how many karts the newest RACE packet to c carries.
+func (c *client) raceCount() int {
+	b := c.last(TypeRace)
+	if b == nil {
+		return -1
+	}
+	return int(b[9])
+}
+
+func TestRoamLatecomerAndRejoin(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	id := openRoam(t, h, a, b)
+	a.kart(id, 2, 0, 100, 1000)
+	b.kart(id, 2, 0, 200, 1000)
+	h.advance(300 * time.Millisecond)
+	// Cat joins mid-session and is on the lot at once, in the next free bay.
+	c := h.client(3, 33)
+	c.hello("cat")
+	c.send(TypeJoin, []byte{0})
+	h.advance(300 * time.Millisecond)
+	v := c.lobby()
+	if v.state != StateRacing || len(v.players) != 3 || v.players[2].flags&2 == 0 {
+		t.Fatalf("latecomer's lobby: %+v", v)
+	}
+	if g := h.s.Lobbies[0].Slots[2].Grid; g != 2 {
+		t.Errorf("latecomer's bay %d, want 2", g)
+	}
+	c.kart(id, 2, 0, 300, 1000)
+	h.advance(300 * time.Millisecond)
+	if n := a.raceCount(); n != 3 {
+		t.Errorf("RACE carries %d karts after the latecomer sent one, want 3", n)
+	}
+	// Cat's first wish is not a press, whatever nonce it carries.
+	c.nonce = 7
+	c.wish(3, RoamTrack, 3, 1)
+	h.advance(300 * time.Millisecond)
+	// Bob backs out and waits in the room; the relay drops his kart.
+	b.send(TypeRetire, []byte{id})
+	h.advance(300 * time.Millisecond)
+	b.wish(1, RoamTrack, 3, 1) // the room's wishes, the same nonce
+	h.advance(300 * time.Millisecond)
+	if v := b.lobby(); v.state != StateRacing || v.players[1].flags&2 != 0 {
+		t.Fatalf("after bob retired: %+v", v)
+	}
+	if n := a.raceCount(); n != 2 {
+		t.Errorf("RACE carries %d karts with bob out, want 2", n)
+	}
+	// Start in the room puts him back on, in his old bay (the free one).
+	b.nonce++
+	b.wish(1, RoamTrack, 3, 1)
+	h.advance(300 * time.Millisecond)
+	if v := b.lobby(); v.players[1].flags&2 == 0 {
+		t.Fatalf("bob not back on the lot: %+v", v)
+	}
+	if g := h.s.Lobbies[0].Slots[1].Grid; g != 1 {
+		t.Errorf("bob's bay %d, want 1", g)
+	}
+	b.kart(id, 2, 0, 250, 2000)
+	h.advance(300 * time.Millisecond)
+	if n := a.raceCount(); n != 3 {
+		t.Errorf("RACE carries %d karts with bob back, want 3", n)
+	}
+	// Ann, who opened it, backing out still ends it for all three.
+	a.send(TypeRetire, []byte{id})
+	h.advance(300 * time.Millisecond)
+	if v := c.lobby(); v.state != StateWaiting {
+		t.Fatalf("state %d after the leader retired, want waiting", v.state)
+	}
+}
+
+// A race is still joined from the next one: no dropping onto a course.
+func TestRaceLatecomerWaits(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	a.hello("ann")
+	b.hello("bob")
+	a.send(TypeJoin, []byte{0})
+	b.send(TypeJoin, []byte{0})
+	a.wish(0, 2, 3, 1)
+	h.advance(300 * time.Millisecond)
+	a.nonce++
+	a.wish(0, 2, 3, 1)
+	h.advance(CountdownLen + 100*time.Millisecond)
+	c := h.client(3, 33)
+	c.hello("cat")
+	c.send(TypeJoin, []byte{0})
+	h.advance(300 * time.Millisecond)
+	if v := c.lobby(); v.state != StateRacing || v.players[2].flags&2 != 0 {
+		t.Fatalf("latecomer to a race: %+v", v)
+	}
+	c.nonce = 3
+	c.wish(3, 2, 3, 1)
+	c.nonce++
+	c.wish(3, 2, 3, 1)
+	h.advance(300 * time.Millisecond)
+	if v := c.lobby(); v.players[2].flags&2 != 0 {
+		t.Fatalf("a press from the room joined a race: %+v", v)
+	}
+}
+
+// The host leaving and rejoining within one tick still ends the session:
+// otherwise they would be back on the lot as a guest of their own session.
+func TestRoamHostRejoinWithinTick(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.client(1, 11), h.client(2, 22)
+	id := openRoam(t, h, a, b)
+	b.kart(id, 2, 0, 100, 1000)
+	a.send(TypeLeave, nil)
+	a.send(TypeJoin, []byte{0})
+	h.advance(300 * time.Millisecond)
+	if v := b.lobby(); v.state != StateWaiting {
+		t.Fatalf("state %d after the host left and came straight back, want waiting", v.state)
+	}
+}
