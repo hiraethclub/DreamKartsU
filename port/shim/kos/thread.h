@@ -5,6 +5,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#define PRIO_DEFAULT 10
+
 typedef struct kthread kthread_t;
 
 typedef struct {

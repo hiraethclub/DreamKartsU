@@ -13,6 +13,7 @@
 #include <arch/timer.h>
 #include <arch/rtc.h>
 #include <arch/arch.h>
+#include <arch/perf.h>
 #include <kos/thread.h>
 #include <kos/mutex.h>
 #include <kos/net.h>
@@ -22,5 +23,13 @@
 #include <dc/vmufs.h>
 #include <dc/vmu_pkg.h>
 #include <dc/fs_dcload.h>
+
+/* main.c's KOS_INIT_FLAGS(INIT_DEFAULT): nothing to initialise. */
+#define INIT_DEFAULT 0
+#define INIT_NET 0
+#define KOS_INIT_FLAGS(flags) extern int dku_kos_init_flags_unused
+
+/* The BIOS's system ID; main.c checks it for the iOS emulator's tag. */
+static inline uint64_t syscall_sysinfo_id(void) { return 0; }
 
 #endif
