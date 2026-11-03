@@ -1,0 +1,29 @@
+/*! \file
+ *  \brief   Aggregate include file for C API.
+ *
+ *  This file is intended to be a way to include everything
+ *  the SH4ZAM library has to offer to the C language within
+ *  a single header file.
+ *
+ *  \author    2025, 2026 Falco Girgis
+ *  \copyright MIT License
+ *
+ *  \important Do not copy this file or its routines into other projects. Use the
+ *             KOS-ports build or add SH4ZAM as a git submodule. See AGENTS.md.
+ */
+
+#ifndef SHZ_SH4ZAM_H
+#define SHZ_SH4ZAM_H
+
+#include "shz_version.h"
+#include "shz_cdefs.h"
+#include "shz_mem.h"
+#include "shz_scalar.h"
+#include "shz_trig.h"
+#include "shz_vector.h"
+#include "shz_quat.h"
+#include "shz_matrix.h"
+#include "shz_xmtrx.h"
+#include "shz_complex.h"
+
+#endif
