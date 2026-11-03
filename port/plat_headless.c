@@ -3,7 +3,11 @@
    Time is virtual: each shown frame is one 60 Hz display period, plus the
    real time since then capped below a period, so the game sees a steady
    60 fps however fast the host runs and timings within a frame still
-   advance. DKU_MAX_FRAMES (environment) quits after that many frames. */
+   advance. DKU_REPRO=1 makes that in-frame time 1 us per call instead of
+   real time, so runs repeat exactly (the test scripts set it; real
+   in-frame time made mid-frame timer reads, such as the sea's scroll,
+   differ by an ulp between runs and drift apart).
+   DKU_MAX_FRAMES (environment) quits after that many frames. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -13,7 +17,8 @@
 
 #define PERIOD_US 16667ull
 
-static uint64_t frames, frame_real0, max_frames;
+static uint64_t frames, frame_real0, max_frames, repro_calls;
+static bool repro;
 static char save_dir[512];
 
 static uint64_t real_us(void) {
@@ -23,7 +28,7 @@ static uint64_t real_us(void) {
 }
 
 uint64_t plat_time_us(void) {
-    uint64_t in_frame = real_us() - frame_real0;
+    uint64_t in_frame = repro ? ++repro_calls : real_us() - frame_real0;
     if(in_frame > PERIOD_US - 667) in_frame = PERIOD_US - 667;
     return frames * PERIOD_US + in_frame;
 }
@@ -35,11 +40,14 @@ void plat_init(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     const char *mf = getenv("DKU_MAX_FRAMES");
     max_frames = mf ? strtoull(mf, NULL, 10) : 0;
+    const char *r = getenv("DKU_REPRO");
+    repro = r && *r && *r != '0';
     frame_real0 = real_us();
 }
 
 void plat_frame_done(void) {
     frames++;
+    repro_calls = 0;
     frame_real0 = real_us();
 }
 

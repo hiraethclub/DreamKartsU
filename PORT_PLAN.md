@@ -509,6 +509,11 @@ At tags `m3`, `m5`, `m6`, `m7`:
     60 (`flappy.c`), so the scale fits.
   - `tools/contact_sheet.py` builds `captures/host/contact.png`. No
     wedges in any of the 30 frames; GL autotest PASS on all 8 tracks.
-  - Found: two GL runs of the same track differ by frame 1800 (place,
-    lap times), so screenshots are not reproducible between runs. Next.
+  - Runs now repeat exactly. Two runs of the same track (GL or null,
+    ASLR or not) used to differ by an ulp in the sea's UVs at frame 300
+    and fully by 1800: the virtual clock added real time inside the
+    frame, so mid-frame timer reads jittered. `DKU_REPRO=1` (set by
+    `tools/test_host.sh`) makes in-frame time 1 us per call. Two GL
+    test runs give byte-identical screenshots on all 8 tracks, so
+    before/after comparisons of renderer changes are now exact.
 

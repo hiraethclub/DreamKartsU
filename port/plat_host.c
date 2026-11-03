@@ -7,7 +7,8 @@
 
    DKU_VIRTUAL_CLOCK=1 (the test scripts) gives the game the headless
    platform's steady 60 Hz clock however fast the host draws, and turns
-   vsync off; DKU_MAX_FRAMES quits after that many frames. Headless runs
+   vsync off; with DKU_REPRO=1 as well, runs repeat exactly
+   (plat_headless.c). DKU_MAX_FRAMES quits after that many frames. Headless runs
    go under xvfb-run with SDL_AUDIODRIVER=dummy. */
 #include <SDL.h>
 #include <stdio.h>
@@ -25,8 +26,8 @@ static SDL_Window *window;
 static SDL_GLContext gl_ctx;
 static SDL_GameController *pads[PLAT_PADS];
 static SDL_AudioDeviceID audio_dev;
-static bool virtual_clock, quit;
-static uint64_t frames, frame_real0, max_frames, t0;
+static bool virtual_clock, repro, quit;
+static uint64_t frames, frame_real0, max_frames, t0, repro_calls;
 static char save_dir[512];
 
 static uint64_t real_us(void) {
@@ -37,7 +38,7 @@ static uint64_t real_us(void) {
 
 uint64_t plat_time_us(void) {
     if(!virtual_clock) return real_us() - t0;
-    uint64_t in_frame = real_us() - frame_real0;
+    uint64_t in_frame = repro ? ++repro_calls : real_us() - frame_real0;
     if(in_frame > PERIOD_US - 667) in_frame = PERIOD_US - 667;
     return frames * PERIOD_US + in_frame;
 }
@@ -62,6 +63,8 @@ void plat_init(void) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     const char *e = getenv("DKU_VIRTUAL_CLOCK");
     virtual_clock = e && *e && *e != '0';
+    e = getenv("DKU_REPRO");
+    repro = e && *e && *e != '0';
     e = getenv("DKU_MAX_FRAMES");
     max_frames = e ? strtoull(e, NULL, 10) : 0;
     t0 = frame_real0 = real_us();
@@ -119,6 +122,7 @@ void plat_frame_done(void) {
         if(now < due) SDL_Delay((Uint32)((due - now) / 1000));
         else if(now > due + 4 * PERIOD_US) t0 = now - frames * PERIOD_US;
     }
+    repro_calls = 0;
     frame_real0 = real_us();
 }
 

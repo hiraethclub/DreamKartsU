@@ -58,7 +58,7 @@ run_track() {
         rm -f captures/host/t$t-f*.png
     fi
     DKU_SAVE_DIR=$save DKU_MAX_FRAMES=${MAX_FRAMES:-40000} DKU_CAPTURE_DIR=captures/host \
-        DKU_VIRTUAL_CLOCK=1 SDL_AUDIODRIVER=dummy DKU_SHOT_TAG=t$t DKU_SHOTS="${SHOTS:-300 1800 4200 7200}" \
+        DKU_VIRTUAL_CLOCK=1 DKU_REPRO=1 SDL_AUDIODRIVER=dummy DKU_SHOT_TAG=t$t DKU_SHOTS="${SHOTS:-300 1800 4200 7200}" \
         timeout "$TIMEOUT" $wrap $RUN "$bin" >"$LOGDIR/run-t$t.log" 2>&1 &
     pid=$!
     # Off the console the game keeps going after its verdict; end the run
