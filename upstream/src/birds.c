@@ -190,7 +190,7 @@ void birds_build(void) {
 /* The gull's flight: out and up away from the kart, round, and back down
    onto the takeoff point. u runs 0 to 1. */
 static V3 flight_pos(const Gull *g, float u) {
-    float a = DK_PI * u, rise = powf(sinf(a), 0.55f);
+    float a = DK_PI * u, rise = powf(fmaxf(sinf(a), 0.0f), 0.55f);   /* DKU: IEEE sinf(pi) < 0 made NaN */
     V3 side = v3(-g->dir.z, 0, g->dir.x);
     V3 p = vmad(g->home, g->dir, g->out * sinf(a));
     p = vmad(p, side, g->side * 0.5f * (1.0f - cosf(2.0f * a)));

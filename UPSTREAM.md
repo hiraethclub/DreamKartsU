@@ -31,3 +31,4 @@ Every edit is marked `/* DKU: reason */` in the source.
 | File | Edit | Why |
 | --- | --- | --- |
 | `src/prof.h` | `prof_mark()` reads `dku_perf_cycles()` (port/shim/arch/perf.h) under `DKU` instead of the SH-4 counter registers at `0xff100008`/`0xff100010` | A literal hardware address; cannot be shimmed |
+| `src/birds.c` | `flight_pos`: `powf(fmaxf(sinf(a), 0.0f), 0.55f)` | At u = 1, IEEE `sinf(pi)` is about -8.7e-8 and `powf` of it is NaN (a gull drawn with NaN pitch as it lands). The SH-4's FSCA evidently gives >= 0. Worth offering upstream. |
