@@ -24,4 +24,8 @@ static inline bool perf_cntr_stop(perf_cntr_t c) { (void)c; return true; }
 static inline bool perf_cntr_clear(perf_cntr_t c) { (void)c; return true; }
 static inline uint64_t perf_cntr_count(perf_cntr_t c) { (void)c; return 0; }
 
+/* prof.h's cycle counter (a DKU edit there): 5 ns units, as the SH-4's. */
+uint64_t timer_ns_gettime64(void);
+static inline uint32_t dku_perf_cycles(void) { return (uint32_t)(timer_ns_gettime64() / 5); }
+
 #endif

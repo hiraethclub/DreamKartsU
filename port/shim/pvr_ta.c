@@ -1,6 +1,7 @@
 /* DKU shim: PVR state, texture memory and the software Tile Accelerator
    (port/ta.h). Context defaults follow KallistiOS's pvr_poly_cxt_col/txr. */
 #include <dc/pvr.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

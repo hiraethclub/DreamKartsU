@@ -30,4 +30,4 @@ Every edit is marked `/* DKU: reason */` in the source.
 
 | File | Edit | Why |
 | --- | --- | --- |
-| (none yet) | | |
+| `src/prof.h` | `prof_mark()` reads `dku_perf_cycles()` (port/shim/arch/perf.h) under `DKU` instead of the SH-4 counter registers at `0xff100008`/`0xff100010` | A literal hardware address; cannot be shimmed |

@@ -426,3 +426,37 @@ At tags `m3`, `m5`, `m6`, `m7`:
     Pillow/NumPy): see Needs Aisling. Cemu 2.6 AppImage found in
     `~/Applications` for M3.
   - Check: `tools/check_m0.sh` prints `M0 CHECK: PASS`.
+- 2026-11-03: **M1 in progress (not done: its check needs the GL
+  renderer and screenshots, which need SDL2/GL installed).**
+  - Plan change: shim-first went further than the plan expected.
+    `render.c`, `input.c`, `rumble.c` and `audio.c` stay **unmodified**:
+    - `port/shim/pvr_ta.c` is a software Tile Accelerator. It decodes the
+      `pvr_prim` headers and `pvr_dr_*` vertex words `render.c` sends into
+      per-list triangle batches (`port/ta.h`) that a backend draws. A
+      backend gets screen x, y and 1/w and rebuilds clip space, which keeps
+      texturing perspective-correct.
+    - `port/xform_c.c` replaces `xform.S` (seven routines) in C.
+    - Maple is virtual: platform controllers appear as maple controllers,
+      a rumble-capable pad gets a Puru Puru pack, VMU files are files in
+      the save folder (atomic writes), and the keyboard feeds a KOS-style
+      queue. The AICA channel packets and `snd_sfx_*` drive
+      `port/shim/snd_shim.c`'s mixer. CD-DA reports "no disc" until M4.
+    - Only `netlink.c` is replaced (`port/netlink_port.c`). It refuses
+      dcvmu.com and upstream's fallback IP outright; host builds always set
+      `DK_NET_TEST_HOST=127.0.0.1`.
+    - The one upstream edit: `src/prof.h` (literal SH-4 counter
+      addresses), in `UPSTREAM.md`.
+  - `make VARIANT=autotest` builds a headless host binary (null backend,
+    virtual 60 Hz clock, `port/plat_headless.c`).
+    `BACKEND=null tools/test_host.sh` races all 8 tracks:
+    **all 8 print `DK AUTOTEST: PASS`** (about 25 s in parallel).
+  - `VARIANT=xfcheck` (upstream's `DK_XF_CHECK` against my C xform) is
+    clean on 5 tracks. Emerald Beach, Coral Crossing and Temple Hill show
+    mismatches; the first is a seagull drawn with pitch = NaN
+    (`birds.c` draw_gulls). Under `-ffast-math`, NaN compares can differ
+    between two compiles of the same code, so this points at a NaN in game
+    state on the host rather than a bug in `xform_c.c`. Next: find where
+    the NaN comes from.
+  - Next for M1: `render_gl.c` and `plat_host.c` (SDL2), screenshots to
+    `captures/host/`. Blocked on the packages in Needs Aisling.
+

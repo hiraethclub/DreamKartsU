@@ -66,7 +66,11 @@ void prof_start(void);       /* counter 1 on its first event */
 void prof_frame_end(void);   /* bank the frame, counter 1 on to the next event */
 void prof_print(void);       /* the window's DK PC line */
 static inline ProfMark prof_mark(void) {
+#ifdef DKU /* DKU: no SH-4 counter registers; 5 ns cycles from the port's clock */
+    ProfMark m = {dku_perf_cycles(), 0};
+#else
     ProfMark m = {*(volatile uint32_t *)0xff100008, *(volatile uint32_t *)0xff100010};
+#endif
     return m;
 }
 /* Add the time since *m to section id and restart *m from now. */
