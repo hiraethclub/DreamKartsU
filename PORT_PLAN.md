@@ -525,4 +525,26 @@ At tags `m3`, `m5`, `m6`, `m7`:
     shadow that upstream's `models.c` describes. GL autotest PASS on
     all 8 tracks. Not yet checked: split screen (volumes are cut per
     view by `r_modvol`, so it should hold).
+  - Menus and split screen: `DKU_INPUT` (host platform) presses
+    scripted buttons at given frames. `tools/capture_menus.sh` drives
+    the GL release build from the title screen through the main menu,
+    race setup and two-player kart select into a split-screen race,
+    saving `captures/host/menu-f*.png`; the contact sheet gives them
+    their own rows. Title, menus, kart select, split-screen HUDs and
+    shadows all render correctly.
+  - No upstream reference screenshots in the imported folder (only
+    `assets/icon.png`), so the comparison M2 suggests was not possible;
+    Flycast reference captures skipped (optional).
+  - Big-endian rerun: PASS. Same Emerald Beach lap times as x86 but a
+    different place, and Tsudoken a little different: float divergence
+    between CPUs (section 1.2 item 7), expected.
+- 2026-11-03: **M2 done.** Tag `m2`. Checks: `tools/test_host.sh`
+  (GL) PASS on all 8 tracks, `BACKEND=null` PASS, `tools/test_be.sh`
+  PASS, `tools/capture_menus.sh` PASS, and `captures/host/contact.png`
+  generated (8 tracks plus menus and split screen) with no missing
+  geometry, wrong colours or z-fighting that I could see.
+  **Aisling:** please eyeball `captures/host/contact.png` (regenerate
+  with `tools/test_host.sh && tools/capture_menus.sh &&
+  tools/contact_sheet.py`; captures are not in git). Next: M3, Wii U
+  bring-up.
 

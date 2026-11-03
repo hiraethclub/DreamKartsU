@@ -9,7 +9,12 @@
    platform's steady 60 Hz clock however fast the host draws, and turns
    vsync off; with DKU_REPRO=1 as well, runs repeat exactly
    (plat_headless.c). DKU_MAX_FRAMES quits after that many frames. Headless runs
-   go under xvfb-run with SDL_AUDIODRIVER=dummy. */
+   go under xvfb-run with SDL_AUDIODRIVER=dummy.
+
+   DKU_INPUT="frame:pad:BUTTON ..." presses BUTTON (A B X Y START UP DOWN
+   LEFT RIGHT) on pad 0..3 for INPUT_HOLD frames from that frame, for
+   tools that drive menus (tools/capture_menus.sh); a pad it names
+   counts as connected. */
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +34,44 @@ static SDL_AudioDeviceID audio_dev;
 static bool virtual_clock, repro, quit;
 static uint64_t frames, frame_real0, max_frames, t0, repro_calls;
 static char save_dir[512];
+
+#define INPUT_HOLD 4
+static struct { uint64_t frame; int pad; uint32_t buttons; } script[256];
+static int nscript;
+static bool script_pad[PLAT_PADS];
+
+static void parse_script(const char *s) {
+    static const struct { const char *name; uint32_t m; } names[] = {
+        {"A", CONT_A}, {"B", CONT_B}, {"X", CONT_X}, {"Y", CONT_Y}, {"START", CONT_START},
+        {"UP", CONT_DPAD_UP}, {"DOWN", CONT_DPAD_DOWN}, {"LEFT", CONT_DPAD_LEFT}, {"RIGHT", CONT_DPAD_RIGHT},
+    };
+    while(s && *s && nscript < (int)(sizeof(script) / sizeof(script[0]))) {
+        unsigned long long f;
+        int pad, used = 0;
+        char name[16];
+        if(sscanf(s, " %llu:%d:%15[A-Z]%n", &f, &pad, name, &used) != 3 || pad < 0 || pad >= PLAT_PADS) {
+            fprintf(stderr, "DKU_INPUT: cannot read \"%s\"\n", s);
+            break;
+        }
+        s += used;
+        uint32_t m = 0;
+        for(size_t k = 0; k < sizeof(names) / sizeof(names[0]); k++)
+            if(!strcmp(name, names[k].name)) m = names[k].m;
+        if(!m) fprintf(stderr, "DKU_INPUT: no button %s\n", name);
+        script[nscript].frame = f;
+        script[nscript].pad = pad;
+        script[nscript++].buttons = m;
+        script_pad[pad] = true;
+    }
+}
+
+static uint32_t script_buttons(int i) {
+    uint32_t m = 0;
+    for(int k = 0; k < nscript; k++)
+        if(script[k].pad == i && frames >= script[k].frame && frames < script[k].frame + INPUT_HOLD)
+            m |= script[k].buttons;
+    return m;
+}
 
 static uint64_t real_us(void) {
     struct timespec ts;
@@ -65,6 +108,7 @@ void plat_init(void) {
     virtual_clock = e && *e && *e != '0';
     e = getenv("DKU_REPRO");
     repro = e && *e && *e != '0';
+    parse_script(getenv("DKU_INPUT"));
     e = getenv("DKU_MAX_FRAMES");
     max_frames = e ? strtoull(e, NULL, 10) : 0;
     t0 = frame_real0 = real_us();
@@ -149,7 +193,8 @@ static int axis(SDL_GameController *c, SDL_GameControllerAxis a) {
 bool plat_pad(int i, cont_state_t *out) {
     memset(out, 0, sizeof(*out));
     SDL_GameController *c = i < PLAT_PADS ? pads[i] : NULL;
-    if(!c && i != 0) return false;
+    if(!c && i != 0 && !(i < PLAT_PADS && script_pad[i])) return false;
+    if(i < PLAT_PADS) out->buttons |= script_buttons(i);
     if(c) {
         static const struct { SDL_GameControllerButton b; uint32_t m; } map[] = {
             {SDL_CONTROLLER_BUTTON_A, CONT_A},
