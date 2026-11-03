@@ -485,4 +485,9 @@ At tags `m3`, `m5`, `m6`, `m7`:
     real GPU.
   - Not run yet: `tools/test_be.sh` (big-endian under qemu-ppc); the
     packages are now installed. First job next session.
+- 2026-11-03: **Big-endian autotest passes.** `tools/test_be.sh`
+  (powerpc-linux-gnu-gcc 14.2, qemu-ppc 10.0, null backend) races
+  Emerald Beach (4th, 70.07 s) and Tsudoken Drift (1st, 104.98 s) to
+  `DK AUTOTEST: PASS` in about 2 min 20 s. The "Terminated" lines it
+  prints are the script ending each run after its verdict.
 
