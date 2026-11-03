@@ -1,0 +1,324 @@
+         w __deregister_frame_info
+         w __fini_wut_socket
+         w __init_wut_socket
+         w __register_frame_info
+02000000 T __rpx_start
+02000038 t init_wut
+02000060 T __init
+02000084 0000002c T abort
+020000b0 0000003c T exit
+020000ec 000000b0 T main
+020001bc 0000000c t register_fini
+020001c8 t __do_global_dtors_aux
+02000294 t frame_dummy
+020002b8 00000044 W __init_wut
+020002fc 00000034 W __fini_wut
+02000330 00000028 W __preinit_user
+02000358 00000034 T __wut__abort
+020003ac 00000148 T __wut__assert_func
+02000524 00000004 T _sbrk_r
+02000528 00000004 T __syscall_getreent
+0200052c 0000003c T __syscall_exit
+02000568 00000010 T __syscall_abort
+02000578 00000010 T __syscall_assert_func
+02000588 00000014 T __init_wut_newlib
+0200059c 00000004 T __fini_wut_newlib
+020005a0 000000ac t __wut_thread_cleanup
+0200064c 0000010c T __wut_getreent
+02000778 000000c4 T __wut_sbrk_r
+0200084c 00000070 T __init_wut_sbrk_heap
+020008dc 00000078 T __fini_wut_sbrk_heap
+02000964 00000030 T __init_wut_thread
+020009a4 0000000c T __syscall_malloc_lock
+020009c0 0000000c T __syscall_malloc_unlock
+020009dc 000000ac T __syscall_lock_acquire_recursive
+02000ac8 000000ac T __syscall_lock_release_recursive
+02000bb4 00000008 W wut_set_thread_specific
+02000bcc 00000008 W wut_get_thread_specific
+02000be4 00000004 T __wut_alloc_from_defaultheap
+02000be8 00000010 T __wut_alloc_from_defaultheap_ex
+02000bf8 00000004 T __wut_free_to_defaultheap
+02000bfc 00000034 T __init_wut_defaultheap
+02000c30 00000160 t ConsoleAddLine
+02000d90 00000040 t ConsoleProcCallbackReleased
+02000df0 000000d4 t ConsoleProcCallbackAcquired
+02000f04 000000a8 T WHBLogConsoleInit
+02000fec 00000050 T WHBLogConsoleFree
+0200106c 000000dc T WHBLogConsoleDraw
+02001188 0000006c T WHBAddLogHandler
+020011f4 000001c0 T WHBLogPrintf
+020013b4 00000024 t procHomeButtonDenied
+020013d8 00000024 t procSaveCallback
+0200140c 00000100 T WHBProcInit
+0200155c 00000028 T WHBProcShutdown
+02001594 000000a8 T WHBProcIsRunning
+0200168c 000001bc T __init_wut_devoptab
+02001898 0000008c T __fini_wut_devoptab
+02001944 0000011c T __wut_fsa_chdir
+02001a70 000000e0 T __wut_fsa_chmod
+02001b60 0000009c T __wut_fsa_close
+02001c2c 000000a0 T __wut_fsa_dirclose
+02001cfc 000001ac T __wut_fsa_dirnext
+02001ed8 0000017c T __wut_fsa_diropen
+02002094 000000a0 T __wut_fsa_dirreset
+02002164 000000d4 T __wut_fsa_fstat
+02002268 0000009c T __wut_fsa_fsync
+02002334 000000e0 T __wut_fsa_mkdir
+02002424 00000504 T __wut_fsa_open
+02002998 000001b4 T __wut_fsa_read
+02002b7c 00000114 T __wut_fsa_rename
+02002ca0 000000c4 T __wut_fsa_rmdir
+02002d74 00000194 T __wut_fsa_seek
+02002f48 00000118 T __wut_fsa_stat
+02003070 00000168 T __wut_fsa_statvfs
+020031e8 000000c8 T __wut_fsa_ftruncate
+020032f0 000000c4 T __wut_fsa_unlink
+020033c4 00000040 T __wut_fsa_hashstring
+02003404 00000380 T __wut_fsa_fixpath
+02003784 0000007c T __wut_fsa_translate_stat_mode
+02003800 00000144 T __wut_fsa_translate_stat
+02003944 00000028 T __wut_fsa_translate_error
+0200396c 000001d4 T __wut_fsa_write
+02003b70 00000448 T __divdi3
+02003fb8 000003c4 T __udivdi3
+0200437c 00000048 T __eabi
+020043c4 000001b8 T chdir
+0200457c 0000027c T _concatenate_path
+020047f8 00000020 T __getreent
+02004818 00000008 t null_write
+02004820 00000018 T setDefaultDevice
+02004838 00000108 T FindDevice
+02004940 00000040 T RemoveDevice
+02004980 000000f4 T AddDevice
+02004a74 00000028 T _exit
+02004a9c 0000014c T memcpy
+02004be8 00000080 T strlen
+02004c68 00000040 T memalign
+02004ca8 00000130 T snprintf
+02004dd8 00000154 T strchr
+02004f2c 000001dc T _memalign_r
+02005108 00000180 T memset
+02005288 000000d8 T _vsnprintf_r
+02005360 00000060 T vsnprintf
+020053c0 0000090c T _malloc_r
+02005ccc 00000138 T _malloc_trim_r
+02005e04 0000032c T _free_r
+02006130 00000104 T strncpy
+02006234 0000009c T strcmp
+020062d0 00000058 T malloc
+02006328 00000030 T free
+02006358 00000078 T strrchr
+020063d0 00000030 T strdup
+02006400 0000010c T _reclaim_reent
+0200650c 000007bc t get_arg
+02006cc8 000039f8 T _svfprintf_r
+0200a6c0 000000c0 T strnlen
+0200a780 000000c8 T strncmp
+0200a848 00000090 T frexp
+0200a8d8 00000070 T _strdup_r
+0200a948 00000104 T _wcrtomb_r
+0200aa4c 00000148 T memchr
+0200ab94 0000010c T __ssprint_r
+0200aca0 0000004c T __locale_mb_cur_max
+0200acec 00000340 t quorem
+0200b02c 00001720 T _dtoa_r
+0200c74c 00000208 T __call_exitprocs
+0200c954 00000010 T _wcsrtombs_r
+0200c964 0000004c T _localeconv_r
+0200c9b0 00000014 T atexit
+0200c9c4 00000194 T __ssputs_r
+0200cb58 00000108 T __utf8_wctomb
+0200cc60 000001e4 T _wcsnrtombs_l
+0200ce44 000000d8 T _wcsnrtombs_r
+0200cf1c 000000f4 T _Balloc
+0200d010 00000024 T _Bfree
+0200d034 00000174 T __multadd
+0200d1a8 00000098 T __hi0bits
+0200d240 0000010c T __lo0bits
+0200d34c 00000108 T __i2b
+0200d454 00000338 T __multiply
+0200d78c 0000019c T __pow5mult
+0200d928 0000026c T __lshift
+0200db94 000000dc T __mcmp
+0200dc70 00000314 T __mdiff
+0200df84 00000194 T __d2b
+0200e118 00000604 T __utf8_mbtowc
+0200e71c 00000020 T __errno
+0200e73c 000000f8 T _calloc_r
+0200e834 000000f4 T __register_exitproc
+0200e928 00000254 T memmove
+0200eb7c 00000634 T _realloc_r
+0200f1b0 00000024 T __assert_func
+0200f1d4 00000014 T __libc_lock_acquire_recursive
+0200f1e8 00000014 T __libc_lock_release_recursive
+0200f1fc 00000014 T __malloc_lock
+0200f210 00000014 T __malloc_unlock
+0200f224 00000380 T __umoddi3
+0200f5a4 00000058 T _restgpr_14_x
+0200f5a8 00000054 T _restgpr_15_x
+0200f5ac 00000050 T _restgpr_16_x
+0200f5b0 0000004c T _restgpr_17_x
+0200f5b4 00000048 T _restgpr_18_x
+0200f5b8 00000044 T _restgpr_19_x
+0200f5bc 00000040 T _restgpr_20_x
+0200f5c0 0000003c T _restgpr_21_x
+0200f5c4 00000038 T _restgpr_22_x
+0200f5c8 00000034 T _restgpr_23_x
+0200f5cc 00000030 T _restgpr_24_x
+0200f5d0 0000002c T _restgpr_25_x
+0200f5d4 00000028 T _restgpr_26_x
+0200f5d8 00000024 T _restgpr_27_x
+0200f5dc 00000020 T _restgpr_28_x
+0200f5e0 0000001c T _restgpr_29_x
+0200f5e4 00000018 T _restgpr_30_x
+0200f5e8 00000014 T _restgpr_31_x
+0200f5fc t __do_global_ctors_aux
+0200f64c T __fini
+10000000 D __SBSS2_END__
+10000000 D __SDATA2_START__
+1000013c d .LC2
+10000240 00000080 d __wut_fsa_devoptab
+100002c0 00000042 d CSWTCH.24
+10000304 00000080 D dotab_stdnull
+100005dc 00000010 d zeroes.0
+100005ec 00000010 d blanks.1
+10000650 0000006c D __action_table
+100006bc 0000006c D __state_table
+10000728 00000100 D __chclass
+10000828 00000101 D _ctype_
+1000092c 0000000c d p05.0
+10000938 00000028 D __mprec_bigtens
+10000960 000000c8 D __mprec_tens
+10000a28 d __CTOR_LIST__
+10000a30 d __CTOR_END__
+10000a30 D __CTOR_END__
+10000a30 D __CTOR_LIST__
+10000a34 d __DTOR_LIST__
+10000a38 D __DTOR_END__
+10000a38 D __DTOR_LIST__
+10000a58 d __EH_FRAME_BEGIN__
+10000a58 D __EH_FRAME_BEGIN__
+10002970 D __EH_FRAME_END__
+10002970 d __FRAME_END__
+10002978 00000004 d consoleColor
+1000297c 00000004 d sConsoleHasForeground
+10002984 00000400 d _current_working_directory
+10002d84 0000008c D devoptab_list
+10002e10 00000004 d defaultDevice
+10002e18 00000200 D _impure_data
+10003018 00000408 D __malloc_av_
+10003420 00000254 D __global_locale
+10003674 00000004 D _impure_ptr
+10003674 D __SDATA_START__
+10003678 00000004 D __malloc_sbrk_base
+1000367c 00000004 D __malloc_trim_threshold
+10003680 00000004 B __wut_exit
+10003684 00000004 B __malloc_max_total_mem
+10003688 00000004 B __malloc_max_sbrked_mem
+1000368c 00000004 B __malloc_top_pad
+10003690 00000004 B __stdio_exit_handler
+10003694 00000004 B __atexit
+10003698 00000008 B __atexit_recursive_mutex
+100036a0 b completed.2
+100036a0 B __SBSS_END__
+100036a4 b dtor_idx.1
+100036a8 b object.0
+100036c0 00000004 b sHeapSize
+100036c4 00000004 b sHeapMaxSize
+100036c8 00000004 b sHeapBase
+100036cc 00000004 b sHeapHandle
+100036d0 00000010 b sMallocSpinLock
+100036e0 00000010 b sSyncSpinLock
+100036f0 00000004 b sBufferSizeDRC
+100036f4 00000004 b sBufferSizeTV
+100036f8 00000004 b sBufferDRC
+100036fc 00000004 b sBufferTV
+10003700 00000004 b sLineNum
+10003704 00000800 b sConsoleBuffer
+10003f04 00000040 b sHandlers
+10003f44 00000004 b sFromHBL
+10003f48 00000004 b sRunning
+10003f4c 00000004 b sMainCore
+10003f50 000003b8 B __wut_fsa_device_data
+10004308 00000400 b temp_cwd
+10004708 00000028 B __malloc_current_mallinfo
+10004730 00000150 B __sf
+10004880 00000190 B __atexit0
+10008000 d _SDA2_BASE_
+1000b674 d _SDA_BASE_
+c0000058 T DCFlushRange
+c0000060 T FSAAddClient
+c0000068 T FSAChangeDir
+c0000070 T FSAChangeMode
+c0000078 T FSACloseDir
+c0000080 T FSACloseFile
+c0000088 T FSADelClient
+c0000090 T FSAFlushFile
+c0000098 T FSAGetDeviceInfo
+c00000a0 T FSAGetFreeSpaceSize
+c00000a8 T FSAGetStat
+c00000b0 T FSAGetStatFile
+c00000b8 T FSAInit
+c00000c0 T FSAMakeDir
+c00000c8 T FSAMount
+c00000d0 T FSAOpenDir
+c00000d8 T FSAOpenFileEx
+c00000e0 T FSAReadDir
+c00000e8 T FSAReadFile
+c00000f0 T FSARemove
+c00000f8 T FSARename
+c0000100 T FSARewindDir
+c0000108 T FSASetPosFile
+c0000110 T FSATruncateFile
+c0000118 T FSAUnmount
+c0000120 T FSAWriteFile
+c0000128 T MEMAllocFromExpHeapEx
+c0000130 T MEMAllocFromFrmHeapEx
+c0000138 T MEMFreeByStateToFrmHeap
+c0000140 T MEMFreeToExpHeap
+c0000148 T MEMGetAllocatableSizeForExpHeapEx
+c0000150 T MEMGetBaseHeapHandle
+c0000158 T MEMRecordStateForFrmHeap
+c0000160 T OSCompareAndSwapAtomicEx
+c0000168 T OSEnableHomeButtonMenu
+c0000170 T OSFastMutex_Init
+c0000178 T OSFastMutex_Lock
+c0000180 T OSFastMutex_Unlock
+c0000188 T OSFatal
+c0000190 T OSGetCoreId
+c0000198 T OSGetCurrentThread
+c00001a0 T OSGetSystemInfo
+c00001a8 T OSGetThreadSpecific
+c00001b0 T OSGetTitleID
+c00001b8 T OSInitMutexEx
+c00001c0 T OSInitSpinLock
+c00001c8 T OSIsDebuggerInitialized
+c00001d0 T OSIsDebuggerPresent
+c00001d8 T OSLockMutex
+c00001e0 T OSSavesDone_ReadyToRelease
+c00001e8 T OSScreenClearBufferEx
+c00001f0 T OSScreenEnableEx
+c00001f8 T OSScreenFlipBuffersEx
+c0000200 T OSScreenGetBufferSizeEx
+c0000208 T OSScreenInit
+c0000210 T OSScreenPutFontEx
+c0000218 T OSScreenSetBufferEx
+c0000220 T OSScreenShutdown
+c0000228 T OSSetThreadCleanupCallback
+c0000230 T OSSetThreadSpecific
+c0000238 T OSSleepTicks
+c0000240 T OSUninterruptibleSpinLock_Acquire
+c0000248 T OSUninterruptibleSpinLock_Release
+c0000250 T OSUnlockMutex
+c0000258 T __os_snprintf
+c0000260 T __rplwrap_exit
+c0000280 T ProcUIDrawDoneRelease
+c0000288 T ProcUIInitEx
+c0000290 T ProcUIProcessMessages
+c0000298 T ProcUIRegisterCallback
+c00002a0 T ProcUIShutdown
+c00002a8 T ProcUISubProcessMessages
+c00002c0 T SYSRelaunchTitle
+c00002e8 R MEMAllocFromDefaultHeap
+c00002f0 R MEMAllocFromDefaultHeapEx
+c00002f8 R MEMFreeToDefaultHeap
