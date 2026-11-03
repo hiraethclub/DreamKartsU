@@ -382,12 +382,11 @@ At tags `m3`, `m5`, `m6`, `m7`:
 
 - ~~Packages, git identity, GitHub push~~: done by Aisling 2026-11-03;
   pushes work (`gh`, HTTPS).
-- **Music source (M4).** Upstream `tools/build_music.py` downloads the
-  Pixabay tracks from `https://dcvmu.com/dreamkarts/music/`, which is Rich's
-  server. The rules forbid connecting builds to dcvmu.com, and I read that
-  as covering asset downloads too. Assumption: I will not fetch from it.
-  Options: you agree it with Rich, or put the nine tracks (Pixabay
-  originals) in `assets/music/cache/` yourself. M4 music work waits on this.
+- ~~Music source (M4)~~: Aisling decided 2026-11-03 to use the same
+  music as the original. Upstream `tools/build_music.py` may fetch the
+  Pixabay tracks from `https://dcvmu.com/dreamkarts/music/` as a one-off
+  asset download at M4. The rule still stands for game builds: no build
+  ever connects to dcvmu.com.
 
 ### Log
 
