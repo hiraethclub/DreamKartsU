@@ -16,7 +16,13 @@
      pvr_txr_load bumps the block's generation.
    - Fog is the PVR's table (entry k at far / 2^(k/16)) or the offset
      colour's alpha (vertex fog), mixed in after texturing and specular.
-   - Modifier volumes (shadows) are not drawn yet (PORT_PLAN.md M2).
+   - Modifier volumes are the PVR's cheap shadow, in stencil. OP and PT
+     draws set bit 7 where the header takes modifiers (fmt.modifier).
+     Each volume then inverts bit 0 for its faces in front of the
+     surface (parity: odd means inside), and two more passes over the
+     same faces move bit 0 to bit 1, so volumes add up as a union. A
+     full-screen pass scales the colour by shadow_scale where bits 7
+     and 1 are set, before TR, which the PVR never shadows.
 
    DKU_SHOTS="f1 f2 ..." saves the frame as PNG at those frame numbers to
    DKU_CAPTURE_DIR (default captures/host), named DKU_SHOT_TAG-fNNNNN.png. */
@@ -41,6 +47,8 @@ void plat_swap(void);
 #define FB_H 480
 
 static GLuint prog, vao, vbo, fbo, fb_color, fb_depth, white_tex;
+static GLuint mod_prog, mod_vao, mod_vbo, dark_prog;
+static size_t mod_vbo_cap;
 static GLint u_tex_on, u_env, u_spec, u_fog_mode, u_use_alpha, u_tex_alpha, u_alpha_ref, u_fog_color,
     u_fog_table, u_fog_far, u_tex;
 static unsigned long frame_no;
@@ -108,6 +116,20 @@ static const char *fs_src =
     "    if(c.a < u_alpha_ref) discard;\n"
     "    o_col = clamp(c, 0.0, 1.0);\n"
     "}\n";
+
+/* Modifier volume faces: position only, the same transform as vs_src. */
+static const char *mod_vs =
+    "#version 330 core\n"
+    DEPTH_K_GLSL
+    "layout(location=0) in vec3 a_pos;\n"
+    "void main() {\n"
+    "    float w = 1.0 / max(a_pos.z, 1e-7);\n"
+    "    gl_Position = vec4((a_pos.x / 320.0 - 1.0) * w, (1.0 - a_pos.y / 240.0) * w, DEPTH_K, w);\n"
+    "}\n";
+static const char *null_fs =
+    "#version 330 core\n"
+    "out vec4 o;\n"
+    "void main() { o = vec4(0.0); }\n";
 
 static const char *blit_vs =
     "#version 330 core\n"
@@ -305,6 +327,16 @@ static void apply(const pvr_poly_cxt_t *c, int list, const pvr_shim_state_t *st)
     else glDisable(GL_BLEND);
     glDepthFunc(gl_depth[c->depth.comparison & 7]);
     glDepthMask(c->depth.write == PVR_DEPTHWRITE_ENABLE);
+    /* Bit 7: whether the surface left in this pixel takes the shadow. */
+    if(list != TA_TR) {
+        glStencilFunc(GL_ALWAYS, c->fmt.modifier ? 0x80 : 0, 0xff);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        glStencilMask(0x80);
+    }
+    else {
+        glStencilFunc(GL_ALWAYS, 0, 0xff);
+        glStencilMask(0);
+    }
     /* Screen-space winding; y points down on the PVR and up here. */
     if(c->gen.culling == PVR_CULLING_CW || c->gen.culling == PVR_CULLING_CCW) {
         glEnable(GL_CULL_FACE);
@@ -386,6 +418,8 @@ void backend_init(void) {
     plat_init();
     prog = link_prog(vs_src, fs_src);
     blit_prog = link_prog(blit_vs, blit_fs);
+    mod_prog = link_prog(mod_vs, null_fs);
+    dark_prog = link_prog(blit_vs, null_fs);
 #define U(n) u_##n = glGetUniformLocation(prog, "u_" #n)
     U(tex_on);
     U(env);
@@ -412,6 +446,14 @@ void backend_init(void) {
     glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ta_vertex_t), (void *)offsetof(ta_vertex_t, argb));
     glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ta_vertex_t), (void *)offsetof(ta_vertex_t, oargb));
 
+    glGenVertexArrays(1, &mod_vao);
+    glBindVertexArray(mod_vao);
+    glGenBuffers(1, &mod_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, mod_vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ta_mod_vertex_t), (void *)0);
+    glBindVertexArray(vao);
+
     glGenTextures(1, &fb_color);
     glBindTexture(GL_TEXTURE_2D, fb_color);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, FB_W, FB_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -419,11 +461,11 @@ void backend_init(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glGenRenderbuffers(1, &fb_depth);
     glBindRenderbuffer(GL_RENDERBUFFER, fb_depth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, FB_W, FB_H);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH32F_STENCIL8, FB_W, FB_H);
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fb_color, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fb_depth);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, fb_depth);
     if(glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         fprintf(stderr, "DKU GL: framebuffer incomplete\n");
         exit(1);
@@ -460,15 +502,68 @@ void backend_init(void) {
 
 void backend_shutdown(void) {}
 
+/* The modifier volumes, after OP and PT (see the top of the file). */
+static void draw_shadows(const ta_frame_t *f, const pvr_shim_state_t *st) {
+    if(!st->shadow_enabled || !f->nvolumes) return;
+    glUseProgram(mod_prog);
+    glBindVertexArray(mod_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, mod_vbo);
+    size_t bytes = (size_t)f->nmod_verts * sizeof(ta_mod_vertex_t);
+    if(bytes > mod_vbo_cap) {
+        mod_vbo_cap = bytes * 2;
+        glBufferData(GL_ARRAY_BUFFER, mod_vbo_cap, NULL, GL_STREAM_DRAW);
+    }
+    glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, f->mod_verts);
+    glDisable(GL_SCISSOR_TEST);   /* r_modvol cuts volumes to their view */
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glDepthMask(GL_FALSE);
+    for(int i = 0; i < f->nvolumes; i++) {
+        const ta_volume_t *v = &f->volumes[i];
+        /* Faces nearer than the surface (larger 1/w) flip bit 0. */
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_GREATER);
+        glStencilFunc(GL_ALWAYS, 0, 0xff);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+        glStencilMask(0x01);
+        glDrawArrays(GL_TRIANGLES, v->first, v->count);
+        /* Inside this volume (bit 0): set bit 1; then clear bit 0. */
+        glDisable(GL_DEPTH_TEST);
+        glStencilFunc(GL_EQUAL, 0x03, 0x01);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        glStencilMask(0x02);
+        glDrawArrays(GL_TRIANGLES, v->first, v->count);
+        glStencilFunc(GL_ALWAYS, 0, 0xff);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
+        glStencilMask(0x01);
+        glDrawArrays(GL_TRIANGLES, v->first, v->count);
+    }
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    /* Darken shadowed surfaces that take modifiers. */
+    glUseProgram(dark_prog);
+    glStencilFunc(GL_EQUAL, 0x82, 0x82);
+    glStencilMask(0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ZERO, GL_CONSTANT_COLOR);
+    glBlendColor(st->shadow_scale, st->shadow_scale, st->shadow_scale, 1);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_SCISSOR_TEST);
+}
+
 void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, FB_W, FB_H);
     glDisable(GL_SCISSOR_TEST);
     glClearColor(st->bg[0], st->bg[1], st->bg[2], 1);
     glClearDepth(0);
+    glClearStencil(0);
     glDepthMask(GL_TRUE);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glStencilMask(0xff);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
+    glEnable(GL_STENCIL_TEST);
     glEnable(GL_SCISSOR_TEST);
 
     glUseProgram(prog);
@@ -490,6 +585,11 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     for(int li = 0; li < TA_LISTS; li++) {
         int l = order[li];
         int last_hdr = -1;
+        if(l == TA_TR) {
+            draw_shadows(f, st);
+            glUseProgram(prog);
+            glBindVertexArray(vao);
+        }
         for(int i = 0; i < f->nbatches[l]; i++) {
             const ta_batch_t *b = &f->batches[l][i];
             if(b->hdr != last_hdr) {
@@ -506,6 +606,7 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
 }
 
 void backend_present(void) {

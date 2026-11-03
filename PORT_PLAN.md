@@ -516,4 +516,13 @@ At tags `m3`, `m5`, `m6`, `m7`:
     `tools/test_host.sh`) makes in-frame time 1 us per call. Two GL
     test runs give byte-identical screenshots on all 8 tracks, so
     before/after comparisons of renderer changes are now exact.
+  - **Shadows (modifier volumes) drawn** in `render_gl.c` as the PVR's
+    cheap shadow, in stencil: OP/PT set bit 7 where the header takes
+    modifiers; each volume flips bit 0 for its faces in front of the
+    surface (parity), then folds it into bit 1 (union of volumes); a
+    full-screen pass scales those pixels by `shadow_scale` (0.75)
+    before TR. The karts now have the hard core inside their soft blob
+    shadow that upstream's `models.c` describes. GL autotest PASS on
+    all 8 tracks. Not yet checked: split screen (volumes are cut per
+    view by `r_modvol`, so it should hold).
 
