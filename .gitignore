@@ -1,0 +1,10 @@
+/build/
+/captures/
+/tools/bin/
+*.o
+*.d
+*.elf
+*.rpx
+*.wuhb
+*.log
+__pycache__/
