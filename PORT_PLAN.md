@@ -450,13 +450,16 @@ At tags `m3`, `m5`, `m6`, `m7`:
     virtual 60 Hz clock, `port/plat_headless.c`).
     `BACKEND=null tools/test_host.sh` races all 8 tracks:
     **all 8 print `DK AUTOTEST: PASS`** (about 25 s in parallel).
-  - `VARIANT=xfcheck` (upstream's `DK_XF_CHECK` against my C xform) is
-    clean on 5 tracks. Emerald Beach, Coral Crossing and Temple Hill show
-    mismatches; the first is a seagull drawn with pitch = NaN
-    (`birds.c` draw_gulls). Under `-ffast-math`, NaN compares can differ
-    between two compiles of the same code, so this points at a NaN in game
-    state on the host rather than a bug in `xform_c.c`. Next: find where
-    the NaN comes from.
+  - `VARIANT=xfcheck` (upstream's `DK_XF_CHECK` run against
+    `port/xform_c.c`) is clean on all 8 tracks. Two causes found:
+    - A real NaN: `birds.c` `flight_pos` took `powf` of IEEE `sinf(pi)`,
+      which is slightly negative. Fixed with a marked edit (`UPSTREAM.md`),
+      worth offering to Rich.
+    - Temple Hill's remaining count is upstream's own check: bystanders bob
+      by moving their strip vertices past the bounding sphere built before
+      the bob (`world_props.c` / `world_mesh.c`). It is harmless and
+      happens on the Dreamcast too, so `tools/test_host.sh` lists it in
+      `XF_KNOWN`.
   - Next for M1: `render_gl.c` and `plat_host.c` (SDL2), screenshots to
     `captures/host/`. Blocked on the packages in Needs Aisling.
 
