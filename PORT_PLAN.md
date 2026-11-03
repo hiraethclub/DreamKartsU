@@ -380,17 +380,8 @@ At tags `m3`, `m5`, `m6`, `m7`:
 
 ### Needs Aisling
 
-- **Packages (sudo).** Needed for M1 onwards (host build, headless tests,
-  local lobby server, big-endian test, asset scripts):
-  `sudo apt install libsdl2-dev libgl-dev libegl-dev xvfb golang-go gcc-powerpc-linux-gnu qemu-user python3-pil python3-numpy python3-scipy python3-matplotlib gh`
-- **Git identity.** No global `user.name`/`user.email` on this machine.
-  Assumption: commits are authored `Aisling <aisling@hiraeth.club>`, passed
-  per commit with `git -c`. To set it permanently:
-  `git config --global user.name "Aisling"` and
-  `git config --global user.email "aisling@hiraeth.club"`.
-- **GitHub push.** `origin` is HTTPS with no credentials and there is no SSH
-  key, so pushes fail. Run `gh auth login` (HTTPS) then `gh auth setup-git`.
-  Until then commits and tags stay local; I push once it works.
+- ~~Packages, git identity, GitHub push~~: done by Aisling 2026-11-03;
+  pushes work (`gh`, HTTPS).
 - **Music source (M4).** Upstream `tools/build_music.py` downloads the
   Pixabay tracks from `https://dcvmu.com/dreamkarts/music/`, which is Rich's
   server. The rules forbid connecting builds to dcvmu.com, and I read that
@@ -460,6 +451,30 @@ At tags `m3`, `m5`, `m6`, `m7`:
       the bob (`world_props.c` / `world_mesh.c`). It is harmless and
       happens on the Dreamcast too, so `tools/test_host.sh` lists it in
       `XF_KNOWN`.
-  - Next for M1: `render_gl.c` and `plat_host.c` (SDL2), screenshots to
-    `captures/host/`. Blocked on the packages in Needs Aisling.
+- 2026-11-03: **M1 done.** Tag `m1`.
+  - `port/plat_host.c`: SDL2 window, GL 3.3 core context, keyboard and SDL
+    game controllers as maple pads, rumble, mixer through SDL audio.
+    `DKU_VIRTUAL_CLOCK=1` gives the headless platform's steady 60 Hz clock.
+  - `port/render_gl.c`: draws the TA frame into a 640x480 FBO: OP, PT, TR
+    in order; header blend, depth compare and write; PT alpha test;
+    texture envs; offset colour; table and vertex fog; userclip as scissor;
+    de-twiddled textures with the KOS mip chain, re-uploaded on
+    `pvr_txr_load`. Depth is 1/w (as z/(1+z)) in a float buffer, cleared
+    to 0. Modifier volumes (shadows) are not drawn yet (M2).
+    `DKU_SHOTS` saves PNGs (zlib) to `captures/host/t<track>-f<frame>.png`.
+  - `tools/test_host.sh` (GL default now) runs each track under its own
+    `xvfb-run` (Mesa llvmpipe) and ends a run once its verdict prints,
+    since off the console the game keeps going after it.
+  - Check: **all 8 tracks `DK AUTOTEST: PASS`** in about 3 min; 28
+    screenshots in `captures/host/`. Text, fog, textures and HUD look right.
+  - Known artefact, for M2: in many frames, near-plane-clipped ground and
+    road triangles (vertices at w = 0.25 with screen x up to about
+    +-64000) are not drawn, leaving background-coloured wedges in the
+    lower screen. Likely llvmpipe's fixed-point setup overflowing on such
+    large coordinates. The GX2 backend will have the same limits, so the
+    fix belongs in the shim or backend: clip those triangles to a guard
+    band in clip space before drawing. Not yet confirmed on softpipe or a
+    real GPU.
+  - Not run yet: `tools/test_be.sh` (big-endian under qemu-ppc); the
+    packages are now installed. First job next session.
 

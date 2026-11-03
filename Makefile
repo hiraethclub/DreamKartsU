@@ -32,8 +32,8 @@ PORT_SOURCES += port/render_null.c port/plat_headless.c
 BACKEND_LIBS :=
 else ifeq ($(BACKEND),gl)
 PORT_SOURCES += port/render_gl.c port/plat_host.c
-BACKEND_CFLAGS := $(shell pkg-config --cflags sdl2 gl 2>/dev/null)
-BACKEND_LIBS := $(shell pkg-config --libs sdl2 gl 2>/dev/null)
+BACKEND_CFLAGS := $(shell pkg-config --cflags sdl2 gl zlib 2>/dev/null)
+BACKEND_LIBS := $(shell pkg-config --libs sdl2 gl zlib 2>/dev/null)
 else
 $(error BACKEND must be null or gl)
 endif

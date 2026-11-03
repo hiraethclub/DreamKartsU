@@ -50,8 +50,28 @@ run_track() {
     rm -rf "$save" && mkdir -p "$save"
     # 60 frames a second of virtual time: a race and its results fit well
     # inside 40000 frames; the frame cap ends the run if PASS never comes.
+    # The GL build draws offscreen under its own Xvfb (Mesa llvmpipe) on
+    # the virtual clock, with no sound, and saves PNGs at fixed frames.
+    wrap=""
+    if [ "$BACKEND" = gl ]; then
+        wrap="xvfb-run -n $((90 + t))"
+        rm -f captures/host/t$t-f*.png
+    fi
     DKU_SAVE_DIR=$save DKU_MAX_FRAMES=${MAX_FRAMES:-40000} DKU_CAPTURE_DIR=captures/host \
-        timeout "$TIMEOUT" $RUN "$bin" >"$LOGDIR/run-t$t.log" 2>&1
+        DKU_VIRTUAL_CLOCK=1 SDL_AUDIODRIVER=dummy DKU_SHOT_TAG=t$t DKU_SHOTS="${SHOTS:-300 1800 4200 7200}" \
+        timeout "$TIMEOUT" $wrap $RUN "$bin" >"$LOGDIR/run-t$t.log" 2>&1 &
+    pid=$!
+    # Off the console the game keeps going after its verdict; end the run
+    # a moment after the verdict line.
+    while kill -0 "$pid" 2>/dev/null; do
+        if grep -qE 'DK AUTOTEST: (PASS|FAIL)' "$LOGDIR/run-t$t.log" 2>/dev/null; then
+            sleep 1
+            kill "$pid" 2>/dev/null
+            break
+        fi
+        sleep 2
+    done
+    wait "$pid"
     echo $? >"$LOGDIR/exit-t$t"
 }
 
