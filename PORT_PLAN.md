@@ -547,4 +547,7 @@ At tags `m3`, `m5`, `m6`, `m7`:
   with `tools/test_host.sh && tools/capture_menus.sh &&
   tools/contact_sheet.py`; captures are not in git). Next: M3, Wii U
   bring-up.
+- 2026-11-04: Aisling looked over the M2 contact sheet: looks fine.
+  She confirmed the aim is the Wii U port **and** online cross-play
+  with real Dreamcasts (M6), not the Wii U alone.
 
