@@ -278,8 +278,7 @@ not depend on her results.
   checksum logic, output OGG instead of CD-DA WAV.
 - Saves: same data `save.c` keeps, to `fs:/vol/external01/wiiu/apps/DreamKartsU/save.bin`
   (SD), explicit byte order, atomic write (temp file then rename).
-- Chat entry: USB keyboard via `nsyskbd`, and `nn_swkbd` software
-  keyboard as the fallback.
+- (Chat entry moved to M6, Aisling 2026-11-04: only online play uses it.)
 
 **Done when:** host autotest still passes; Wii U build compiles; sound
 plays in Cemu; settings and records survive a restart in Cemu. Tag `m4`.
@@ -312,6 +311,9 @@ hardware checkpoint.
   received.
 - Keep `net_version.h` exactly as upstream. Do not invent a platform field
   in the protocol; that is Rich's server and his decision.
+- Chat entry (moved from M4): USB keyboard via `nsyskbd`, and the
+  `nn_swkbd` software keyboard as the fallback; the PC build's keyboard
+  feeds the same KOS-style queue.
 
 **Done when:** `test_online.sh` passes on the host build; the Wii U build
 connects to the local server in Cemu or on console. Tag `m6`.
@@ -596,3 +598,7 @@ At tags `m3`, `m5`, `m6`, `m7`:
   - Not in M3 (M4): sound (no AX yet), Pro Controller / Wii Remote,
     rumble, keyboard.
 
+
+- 2026-11-04: Plan change (Aisling): chat entry moves from M4 to M6.
+  Only online play uses it, and M4 without it gets the console build to
+  a state worth testing sooner (sound, music, controllers, rumble).
