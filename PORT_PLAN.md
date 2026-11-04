@@ -397,6 +397,9 @@ At tags `m3`, `m5`, `m6`, `m7`:
   asset download at M4. The rule still stands for game builds: no build
   ever connects to dcvmu.com.
 
+- **M3 hardware test (2026-11-04):** the m3 builds are ready to try on
+  the console. What to check and where to write results: `TESTING.md`.
+
 ### Log
 
 - 2026-11-03: plan written from a survey of upstream at the main branch of
@@ -550,4 +553,46 @@ At tags `m3`, `m5`, `m6`, `m7`:
 - 2026-11-04: Aisling looked over the M2 contact sheet: looks fine.
   She confirmed the aim is the Wii U port **and** online cross-play
   with real Dreamcasts (M6), not the Wii U alone.
+- 2026-11-04: **M3 done.** Tag `m3`. **Ready for the first hardware
+  test** (Needs Aisling, `TESTING.md`).
+  - `Makefile.wiiu` (devkitPPC + wut 1.9.2) builds
+    `build/wiiu-gx2-<variant>/DreamKartsU.wuhb`; source lists and flags
+    shared with the host in `sources.mk`. The game logic compiled and
+    linked for the Wii U first time: wut's newlib supplies pthreads,
+    BSD sockets and `clock_gettime`.
+  - `port/plat_wiiu.c`: WHBProc (HOME menu, background, quit from HOME
+    ends `main`), system clock, GamePad as pad 0, saves to
+    `SD:/wiiu/apps/DreamKartsU/`, stdout/stderr to the UDP log and
+    OSReport line by line.
+  - `port/render_gx2.c`: a port of `render_gl.c` with the same passes and
+    header mapping, 1/w depth through halfZ clip control, PVR textures
+    to RGBA8 (little-endian reads) via linear staging surfaces and
+    `GX2CopySurface`, colour attributes fetched 8-in-32 so the shaders
+    match the host's, uniform blocks byte-swapped, stencil shadows, and
+    the 640x480 frame blitted 4:3 to TV and GamePad. Shaders in
+    `port/shaders/` (GLSL 450, CafeGLSL; `.gsh` checked in).
+  - Found in Cemu: `GX2ClearDepthStencilEx` with depth 0 left the buffer
+    above every depth the game draws, so only the HUD (depth test off)
+    showed. Proved by flipping every compare (the world then drew,
+    farthest first). Depth and stencil are now cleared by a full-screen
+    quad, which does not depend on how an implementation treats the
+    clear value. **Console question:** does the real GPU honour it?
+    Either way the quad is correct.
+  - `.wuhb`: icon and TV/GamePad splashes made from upstream's
+    `assets/icon.png` by `tools/make_wuhb_art.py`.
+  - `tools/cemu_run.sh` runs a `.wuhb` in Cemu 2.6 (AppImage) on a
+    private Xvfb with a private copy of Aisling's settings (OpenGL,
+    OSReport logging = log flag bit 17, found by bisecting), so her own
+    Cemu setup is untouched. `tools/test_wiiu.sh` is the M3 check: no
+    compiler warnings in any Wii U build, each track's autotest races to
+    `DK AUTOTEST: PASS` in Cemu, and the release build boots to the
+    title. **All 8 tracks PASS; release boots to the title** (about 5
+    minutes, screenshots in `captures/wiiu/`). Cemu's fps here (min
+    ~38) is the software rasteriser, not the console.
+  - Fixed on all platforms: `main` reads the clock before `plat_init`,
+    so the boot time underflowed; clocks now start at their first read.
+  - Host checks rerun: GL and null autotests, big-endian, menu capture
+    all PASS.
+  - Not in M3 (M4): sound (no AX yet), Pro Controller / Wii Remote,
+    rumble, keyboard.
 
