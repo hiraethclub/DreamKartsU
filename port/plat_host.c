@@ -79,7 +79,13 @@ static uint64_t real_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
 }
 
+/* The clock starts at the first call: main reads it before plat_init. */
+static void clock_start(void) {
+    if(!t0) t0 = frame_real0 = real_us();
+}
+
 uint64_t plat_time_us(void) {
+    clock_start();
     if(!virtual_clock) return real_us() - t0;
     uint64_t in_frame = repro ? ++repro_calls : real_us() - frame_real0;
     if(in_frame > PERIOD_US - 667) in_frame = PERIOD_US - 667;
@@ -111,7 +117,7 @@ void plat_init(void) {
     parse_script(getenv("DKU_INPUT"));
     e = getenv("DKU_MAX_FRAMES");
     max_frames = e ? strtoull(e, NULL, 10) : 0;
-    t0 = frame_real0 = real_us();
+    clock_start();
 
     if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO) != 0 &&
        SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {

@@ -28,6 +28,8 @@ static uint64_t real_us(void) {
 }
 
 uint64_t plat_time_us(void) {
+    /* main reads the clock before plat_init. */
+    if(!frame_real0) frame_real0 = real_us();
     uint64_t in_frame = repro ? ++repro_calls : real_us() - frame_real0;
     if(in_frame > PERIOD_US - 667) in_frame = PERIOD_US - 667;
     return frames * PERIOD_US + in_frame;
@@ -42,7 +44,7 @@ void plat_init(void) {
     max_frames = mf ? strtoull(mf, NULL, 10) : 0;
     const char *r = getenv("DKU_REPRO");
     repro = r && *r && *r != '0';
-    frame_real0 = real_us();
+    if(!frame_real0) frame_real0 = real_us();
 }
 
 void plat_frame_done(void) {
