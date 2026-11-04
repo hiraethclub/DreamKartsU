@@ -15,6 +15,8 @@ uint64_t plat_time_us(void);
 bool plat_quit_requested(void);
 /* Folder for save files, with a trailing slash; created if missing. */
 const char *plat_save_dir(void);
+/* Folder holding the music files (NN.mp3), with a trailing slash. */
+const char *plat_music_dir(void);
 /* Controller i as the maple bus would report it; false if absent. */
 bool plat_pad(int i, cont_state_t *out);
 /* Controller i has a rumble motor (it gets a Puru Puru pack). */

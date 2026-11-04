@@ -22,7 +22,7 @@ VARIANT_FLAGS_xfcheck := -DDK_AUTOTEST -DDK_XF_CHECK
 COMMON_CFLAGS := -DDKU -std=gnu17 -O2 -ffast-math -fsigned-char -g -Wall -Wextra -Wno-unused-parameter \
 	-Wno-missing-field-initializers -Wno-deprecated-declarations
 COMMON_CPPFLAGS := -iquote port/shim/relroot/a/b/c -Iport/shim -Iport -I$(UP)/src -I$(GEN) \
-	-Ithird_party/sh4zam/include -MMD -MP
+	-Ithird_party/sh4zam/include -isystem third_party/dr_libs -MMD -MP
 
 UPSTREAM_SHA := $(shell grep -m1 -oE '`[0-9a-f]{40}`' UPSTREAM.md | head -1 | tr -d '`' | cut -c1-7)
 PORT_SHA := $(shell git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)

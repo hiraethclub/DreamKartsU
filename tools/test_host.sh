@@ -11,6 +11,10 @@
 #   CROSS=powerpc-linux-gnu- RUN="qemu-ppc -L /usr/powerpc-linux-gnu"
 #                                      big-endian run (tools/test_be.sh)
 #   TRACKS="0 7" tools/test_host.sh    some tracks only
+#
+# Sound (M4): each race must also have mixed audible effects, and, when
+# music/ holds the songs (tools/build_music.py), started a song with no
+# play failures and mixed it audibly (snd_shim.c's "DKU AUDIO" lines).
 set -u
 cd "$(dirname "$0")/.."
 if [ -z "${BACKEND:-}" ]; then
@@ -83,6 +87,23 @@ for t in $TRACKS; do
 done
 for p in $pids; do wait "$p"; done
 
+# "ok", or what is wrong with the race's sound.
+sound_verdict() {
+    a=$(grep 'DKU AUDIO:' "$1" | tail -1)
+    [ -n "$a" ] || { echo "no audio mixed"; return; }
+    sp=$(echo "$a" | sed -E 's/.*effects peak ([0-9]+).*/\1/')
+    mp=$(echo "$a" | sed -E 's/.*music peak ([0-9]+).*/\1/')
+    [ "$sp" -gt 1000 ] || { echo "effects silent"; return; }
+    if [ -f music/01.mp3 ]; then
+        m=$(grep -m1 'DK AUTOTEST: music:' "$1")
+        echo "$m" | grep -qE ': [1-9][0-9]* CD-DA tracks, [1-9][0-9]* songs started, [0-9]+ ended, 0 play failures' ||
+            { echo "music: ${m#DK AUTOTEST: music: }"; return; }
+        [ "$mp" -gt 1000 ] || { echo "music silent"; return; }
+    fi
+    echo ok
+}
+
+[ -f music/01.mp3 ] || echo "test_host: no music/ (tools/build_music.py): checking effects only"
 fail=0
 for t in $TRACKS; do
     log=$LOGDIR/run-t$t.log
@@ -93,6 +114,8 @@ for t in $TRACKS; do
         verdict=FAIL
         fail=1
     fi
+    snd=$(sound_verdict "$log")
+    if [ "$snd" != ok ]; then verdict="FAIL ($snd)"; fail=1; fi
     xf=$(grep 'DK XFCHECK' "$log" | tail -1 || true)
     if [ -n "$xf" ] && ! echo "$xf" | grep -q 'mismatch=0'; then
         case " $XF_KNOWN " in

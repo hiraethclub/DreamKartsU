@@ -16,6 +16,7 @@
    tools that drive menus (tools/capture_menus.sh); a pad it names
    counts as connected. */
 #include <SDL.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,7 +88,16 @@ static void clock_start(void) {
 uint64_t plat_time_us(void) {
     clock_start();
     if(!virtual_clock) return real_us() - t0;
-    uint64_t in_frame = repro ? ++repro_calls : real_us() - frame_real0;
+    /* Only the game thread's reads step the repro clock: the jukebox and
+       save threads read it on their own schedule. */
+    static pthread_t game;
+    static bool have_game;
+    if(!have_game) {
+        game = pthread_self();
+        have_game = true;
+    }
+    uint64_t in_frame = !repro ? real_us() - frame_real0
+                        : pthread_equal(pthread_self(), game) ? ++repro_calls : repro_calls;
     if(in_frame > PERIOD_US - 667) in_frame = PERIOD_US - 667;
     return frames * PERIOD_US + in_frame;
 }
@@ -190,6 +200,22 @@ const char *plat_save_dir(void) {
         mkdir(save_dir, 0755);
     }
     return save_dir;
+}
+
+/* DKU_MUSIC_DIR, else music/ beside the program, else music/ here (a
+   source checkout after tools/build_music.py). */
+const char *plat_music_dir(void) {
+    static char dir[512];
+    if(!dir[0]) {
+        const char *d = getenv("DKU_MUSIC_DIR");
+        char *base = SDL_GetBasePath();
+        struct stat st;
+        if(d) snprintf(dir, sizeof(dir), "%s/", d);
+        else if(base && (snprintf(dir, sizeof(dir), "%smusic/", base), stat(dir, &st) == 0)) {}
+        else snprintf(dir, sizeof(dir), "music/");
+        SDL_free(base);
+    }
+    return dir;
 }
 
 static int axis(SDL_GameController *c, SDL_GameControllerAxis a) {

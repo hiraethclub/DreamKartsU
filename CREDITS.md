@@ -21,6 +21,10 @@ Port by Aisling (hiraethclub).
 - [SDL2](https://www.libsdl.org/) (zlib licence): the Linux host build
 - [SH4ZAM](https://sh4zam.com/) by Falco Girgis and contributors (MIT),
   pinned in `third_party/sh4zam/`, licence in its `LICENSE`
+- [dr_mp3](https://github.com/mackron/dr_libs) by David Reid, based on
+  minimp3 by lieff (public domain or MIT No Attribution, at your choice):
+  plays the music files. `third_party/dr_libs/dr_mp3.h` at commit
+  `35b5c392cc15456736c440a68dbe073178bbffe0`, licence at the end of the file
 
 ## Licence notices
 

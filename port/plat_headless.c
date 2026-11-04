@@ -7,12 +7,18 @@
    real time, so runs repeat exactly (the test scripts set it; real
    in-frame time made mid-frame timer reads, such as the sea's scroll,
    differ by an ulp between runs and drift apart).
-   DKU_MAX_FRAMES (environment) quits after that many frames. */
+   DKU_MAX_FRAMES (environment) quits after that many frames.
+
+   Sound is mixed and thrown away, one display period of it a frame, so
+   autotests exercise the mixer and the music stream (snd_shim.c reports
+   the levels); music comes from DKU_MUSIC_DIR, default music/. */
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <time.h>
 
+#include "audio_mix.h"
 #include "plat.h"
 
 #define PERIOD_US 16667ull
@@ -30,7 +36,16 @@ static uint64_t real_us(void) {
 uint64_t plat_time_us(void) {
     /* main reads the clock before plat_init. */
     if(!frame_real0) frame_real0 = real_us();
-    uint64_t in_frame = repro ? ++repro_calls : real_us() - frame_real0;
+    /* Only the game thread's reads step the repro clock: the jukebox and
+       save threads read it on their own schedule. */
+    static pthread_t game;
+    static bool have_game;
+    if(!have_game) {
+        game = pthread_self();
+        have_game = true;
+    }
+    uint64_t in_frame = !repro ? real_us() - frame_real0
+                        : pthread_equal(pthread_self(), game) ? ++repro_calls : repro_calls;
     if(in_frame > PERIOD_US - 667) in_frame = PERIOD_US - 667;
     return frames * PERIOD_US + in_frame;
 }
@@ -48,6 +63,8 @@ void plat_init(void) {
 }
 
 void plat_frame_done(void) {
+    static int16_t out[2 * AUDIO_MIX_RATE / 60];
+    audio_mix(out, AUDIO_MIX_RATE / 60);
     frames++;
     repro_calls = 0;
     frame_real0 = real_us();
@@ -62,6 +79,15 @@ const char *plat_save_dir(void) {
         mkdir(save_dir, 0755);
     }
     return save_dir;
+}
+
+const char *plat_music_dir(void) {
+    static char dir[512];
+    if(!dir[0]) {
+        const char *d = getenv("DKU_MUSIC_DIR");
+        snprintf(dir, sizeof(dir), "%s/", d ? d : "music");
+    }
+    return dir;
 }
 
 bool plat_pad(int i, cont_state_t *out) {

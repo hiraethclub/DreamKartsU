@@ -8,3 +8,4 @@
 *.wuhb
 *.log
 __pycache__/
+/music/

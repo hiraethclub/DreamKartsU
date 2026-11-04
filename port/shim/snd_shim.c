@@ -5,6 +5,7 @@
 #include <math.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,6 +49,27 @@ static void chan_freq(Chan *c, int freq) {
 
 void audio_mix_init(void) {}
 
+#ifdef DK_AUTOTEST
+/* Autotest builds report what was mixed every 10 s of output, so the test
+   scripts can tell sound played (effects and music both non-silent). */
+static uint64_t mixed;
+static int32_t sfx_peak, music_peak;
+
+static void stats(const int32_t *pre, const int32_t *post, int m) {
+    for(int k = 0; k < 2 * m; k++) {
+        int32_t a = pre[k] < 0 ? -pre[k] : pre[k], b = post[k] - pre[k];
+        if(b < 0) b = -b;
+        if(a > sfx_peak) sfx_peak = a;
+        if(b > music_peak) music_peak = b;
+    }
+    uint64_t before = mixed / (10 * AUDIO_MIX_RATE);
+    mixed += (uint64_t)m;
+    if(mixed / (10 * AUDIO_MIX_RATE) != before)
+        printf("DKU AUDIO: %llu s mixed, effects peak %ld, music peak %ld\n",
+               (unsigned long long)(mixed / AUDIO_MIX_RATE), (long)sfx_peak, (long)music_peak);
+}
+#endif
+
 void audio_mix_set_music(audio_music_fn fn) {
     pthread_mutex_lock(&lock);
     music_fn = fn;
@@ -57,7 +79,7 @@ void audio_mix_set_music(audio_music_fn fn) {
 void audio_mix_music_gain(float gain) { music_gain = gain; }
 
 void audio_mix(int16_t *out, int n) {
-    int32_t acc[2 * 1024];
+    static int32_t acc[2 * 1024];   /* under lock; static, not on a small audio thread stack */
     pthread_mutex_lock(&lock);
     while(n > 0) {
         int m = n > 1024 ? 1024 : n;
@@ -82,7 +104,14 @@ void audio_mix(int16_t *out, int n) {
                 c->pos += c->step;
             }
         }
+#ifdef DK_AUTOTEST
+        static int32_t pre[2 * 1024];
+        memcpy(pre, acc, sizeof(int32_t) * 2 * (size_t)m);
+#endif
         if(music_fn) music_fn(acc, m, music_gain);
+#ifdef DK_AUTOTEST
+        stats(pre, acc, m);
+#endif
         for(int k = 0; k < 2 * m; k++) {
             int32_t v = acc[k];
             out[k] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
