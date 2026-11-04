@@ -25,7 +25,7 @@ include sources.mk
 ifeq ($(BACKEND),null)
 PORT_SOURCES += port/render_null.c port/plat_headless.c
 else ifeq ($(BACKEND),gx2)
-PORT_SOURCES += port/render_gx2.c port/plat_wiiu.c
+PORT_SOURCES += port/render_gx2.c port/plat_wiiu.c port/audio_ax.c
 else
 $(error BACKEND must be gx2 or null)
 endif
@@ -75,9 +75,23 @@ $(OUT)/DreamKartsU.rpx: $(ELF)
 
 # Icon and splashes: tools/make_wuhb_art.py (checked in).
 WUHB_ART := port/wuhb/icon.png port/wuhb/tv.png port/wuhb/drc.png
-$(OUT)/DreamKartsU.wuhb: $(OUT)/DreamKartsU.rpx $(WUHB_ART)
+# Content folder (/vol/content at run time): the music files from
+# tools/build_music.py, hard-linked where possible. Without them the game
+# runs with no music, as with no disc.
+MUSIC := $(wildcard music/[0-9][0-9].mp3)
+$(OUT)/content/.list: force
+	@mkdir -p $(OUT)/content
+	@echo "$(MUSIC)" | cmp -s - $@ || echo "$(MUSIC)" > $@
+$(OUT)/content/.stamp: $(OUT)/content/.list $(MUSIC)
+	@rm -rf $(OUT)/content/music && mkdir -p $(OUT)/content/music
+	@$(if $(MUSIC),cp -l $(MUSIC) $(OUT)/content/music/ 2>/dev/null || cp $(MUSIC) $(OUT)/content/music/,\
+		echo "wuhb: no music/ (tools/build_music.py): building without music")
+	@touch $@
+
+$(OUT)/DreamKartsU.wuhb: $(OUT)/DreamKartsU.rpx $(WUHB_ART) $(OUT)/content/.stamp
 	wuhbtool $< $@ --name "DreamKartsU" --short-name "DreamKartsU" --author "Rich Stokes, port by hiraethclub" \
-		--icon=port/wuhb/icon.png --tv-image=port/wuhb/tv.png --drc-image=port/wuhb/drc.png
+		--icon=port/wuhb/icon.png --tv-image=port/wuhb/tv.png --drc-image=port/wuhb/drc.png \
+		--content=$(OUT)/content
 
 $(OUT)/up/%.o: $(UP)/src/%.c | $(OUT)/version.h
 	@mkdir -p $(dir $@)

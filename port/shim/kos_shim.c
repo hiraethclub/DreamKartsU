@@ -9,6 +9,10 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __WIIU__
+#include <coreinit/thread.h>
+#include <coreinit/time.h>
+#endif
 
 #include "../plat.h"
 
@@ -27,7 +31,14 @@ struct kthread {
 kthread_t *thd_create_ex(const kthread_attr_t *attr, void *(*routine)(void *param), void *param) {
     kthread_t *k = calloc(1, sizeof(*k));
     if(!k) return NULL;
-    if(pthread_create(&k->t, NULL, routine, param)) {
+    /* KOS threads get 64 KiB unless they ask; wut's pthread default is
+       much smaller. */
+    pthread_attr_t pa;
+    pthread_attr_init(&pa);
+    pthread_attr_setstacksize(&pa, attr && attr->stack_size ? attr->stack_size : 64 * 1024);
+    int err = pthread_create(&k->t, &pa, routine, param);
+    pthread_attr_destroy(&pa);
+    if(err) {
         free(k);
         return NULL;
     }
@@ -60,9 +71,14 @@ int thd_detach(kthread_t *thd) {
     return rv;
 }
 
+/* OSSleepTicks on the Wii U: wut's nanosleep crashed Cemu (cdda_shim.c). */
 void thd_sleep(unsigned int ms) {
+#ifdef __WIIU__
+    OSSleepTicks(OSMillisecondsToTicks(ms));
+#else
     struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L};
     while(nanosleep(&ts, &ts) && errno == EINTR) {}
+#endif
 }
 
 void thd_pass(void) { sched_yield(); }
