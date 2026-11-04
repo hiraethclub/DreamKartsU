@@ -1,0 +1,107 @@
+# DreamKartsU: the Wii U build (devkitPPC + wut).
+#
+#   make -f Makefile.wiiu                    release .rpx and .wuhb
+#   make -f Makefile.wiiu VARIANT=autotest   CPU drives a race (DK_AT_TRACK=N)
+#   make -f Makefile.wiiu BACKEND=null       game logic only, no graphics
+#
+# Output: build/wiiu-<backend>-<variant>[-t<track>]/DreamKartsU.{rpx,wuhb}
+
+.SECONDEXPANSION:
+ifeq ($(strip $(DEVKITPRO)),)
+$(error DEVKITPRO is not set (export DEVKITPRO=/opt/devkitpro))
+endif
+DEVKITPPC ?= $(DEVKITPRO)/devkitPPC
+WUT_ROOT := $(DEVKITPRO)/wut
+PATH := $(DEVKITPPC)/bin:$(DEVKITPRO)/tools/bin:$(PATH)
+
+VARIANT ?= release
+BACKEND ?= gx2
+DK_AT_TRACK ?=
+EXTRA_CFLAGS ?=
+
+CC := powerpc-eabi-gcc
+include sources.mk
+
+ifeq ($(BACKEND),null)
+PORT_SOURCES += port/render_null.c port/plat_headless.c
+else ifeq ($(BACKEND),gx2)
+PORT_SOURCES += port/render_gx2.c port/plat_wiiu.c
+else
+$(error BACKEND must be gx2 or null)
+endif
+
+CFG := wiiu-$(BACKEND)-$(VARIANT)$(if $(DK_AT_TRACK),-t$(DK_AT_TRACK))
+OUT := build/$(CFG)
+ELF := $(OUT)/DreamKartsU.elf
+
+MACHDEP := -DESPRESSO -mcpu=750 -meabi -mhard-float
+CFLAGS := $(COMMON_CFLAGS) $(MACHDEP) -ffunction-sections -D__WIIU__ -D__WUT__ \
+	$(VARIANT_FLAGS_$(VARIANT)) $(if $(DK_AT_TRACK),-DDK_AT_TRACK=$(DK_AT_TRACK)) $(EXTRA_CFLAGS)
+CPPFLAGS := $(COMMON_CPPFLAGS) -I$(OUT) -I$(WUT_ROOT)/include
+LDFLAGS := $(MACHDEP) -specs=$(WUT_ROOT)/share/wut.specs -L$(WUT_ROOT)/lib
+LDLIBS := -lwut -lm
+
+OBJS := $(addprefix $(OUT)/up/,$(UP_SOURCES:.c=.o)) $(addprefix $(OUT)/,$(PORT_SOURCES:.c=.o)) $(OUT)/port/blobs.o
+ifeq ($(BACKEND),gx2)
+OBJS += $(OUT)/port/shaders/shaders.o
+endif
+
+# Shader groups: vertex + pixel source -> .gsh with CafeGLSL. The .gsh are
+# checked in, so a build without tools/bin/glslcompiler.elf still works.
+GLSLC := tools/bin/glslcompiler.elf
+GSH := main blit mod dark
+gsh_vs_main := main
+gsh_ps_main := main
+gsh_vs_blit := blit
+gsh_ps_blit := blit
+gsh_vs_mod := mod
+gsh_ps_mod := null
+gsh_vs_dark := blit
+gsh_ps_dark := null
+port/shaders/%.gsh: $$(wildcard port/shaders/$$(gsh_vs_$$*).vert port/shaders/$$(gsh_ps_$$*).frag)
+	@if [ -x $(GLSLC) ]; then \
+		echo "glsl $@"; \
+		$(GLSLC) -vs port/shaders/$(gsh_vs_$*).vert -ps port/shaders/$(gsh_ps_$*).frag -o $@ >$@.log 2>&1 || \
+			{ cat $@.log; rm -f $@; exit 1; }; rm -f $@.log; \
+	else echo "glsl: no $(GLSLC) (tools/get_cafeglsl.sh), using the checked-in $@"; fi
+
+all: $(OUT)/DreamKartsU.wuhb
+
+$(ELF): $(OBJS)
+	$(CC) $(LDFLAGS) -Wl,-Map,$(OUT)/DreamKartsU.map -o $@ $^ $(LDLIBS)
+
+$(OUT)/DreamKartsU.rpx: $(ELF)
+	elf2rpl $< $@
+
+# Icon and splashes: tools/make_wuhb_art.py (checked in).
+WUHB_ART := port/wuhb/icon.png port/wuhb/tv.png port/wuhb/drc.png
+$(OUT)/DreamKartsU.wuhb: $(OUT)/DreamKartsU.rpx $(WUHB_ART)
+	wuhbtool $< $@ --name "DreamKartsU" --short-name "DreamKartsU" --author "Rich Stokes, port by hiraethclub" \
+		--icon=port/wuhb/icon.png --tv-image=port/wuhb/tv.png --drc-image=port/wuhb/drc.png
+
+$(OUT)/up/%.o: $(UP)/src/%.c | $(OUT)/version.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(UP_QUIET_$*) -c -o $@ $<
+
+$(OUT)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(OUT)/port/blobs.o: port/blobs.S $(GEN)/textures.pak $(GEN)/sfx.pak
+	@mkdir -p $(dir $@)
+	$(CC) $(MACHDEP) -DDKU_PAK_DIR=$(GEN) -c -o $@ $<
+
+$(OUT)/port/shaders/shaders.o: port/shaders/shaders.S $(addprefix port/shaders/,$(addsuffix .gsh,$(GSH)))
+	@mkdir -p $(dir $@)
+	$(CC) $(MACHDEP) -c -o $@ $<
+
+$(OUT)/version.h: force
+	@mkdir -p $(OUT)
+	@echo '#define DK_GIT_SHA "$(UPSTREAM_SHA)-dku-$(PORT_SHA)"' | cmp -s - $@ || \
+		echo '#define DK_GIT_SHA "$(UPSTREAM_SHA)-dku-$(PORT_SHA)"' > $@
+
+clean:
+	rm -rf build/wiiu-*
+
+.PHONY: all clean force
+-include $(OBJS:.o=.d)
