@@ -51,3 +51,42 @@ What is in this build and what is not yet:
 ### Results
 
 (Write here.)
+
+## m4: sound, music, controllers, rumble, saves
+
+**Builds:** `build/wiiu-gx2-release/DreamKartsU.wuhb` (about 47 MB: the
+music is inside it now) and, for the save check,
+`build/wiiu-gx2-savetest/DreamKartsU.wuhb`. Install as for m3.
+
+**Correction to the m3 sheet:** the triggers do not accelerate and brake.
+As on the Dreamcast, **A accelerates, B brakes, X or a trigger drifts, Y
+uses an item**, both triggers together look back.
+
+### Things to check
+
+1. Sound effects and music, on the TV and on the GamePad speaker. Does the
+   title music start? Does a new song come in after a race starts? Any
+   crackle, stutter, gaps or wrong pitch (too fast or slow, "chipmunk")?
+   Settings > Music volume and the music switch.
+2. Kart engine sounds rise and fall with speed; the plane over Emerald
+   Beach (if you see it) pans.
+3. GamePad rumble: hop, drift boosts, bumps, landing. Too weak, too
+   strong, or does it buzz on after an event ends?
+4. A **Pro Controller**: sticks, A/B/X/Y, ZL/ZR and L/R drift, rumble.
+5. A **Wii Remote held sideways** (d-pad on the left): d-pad steers, 2
+   accelerates, 1 brakes, B (underneath) drifts, A items, + pauses.
+   With a **Nunchuk**: stick steers, A accelerates, B brakes, Z drifts,
+   C items. A **Classic Controller**, if you have one.
+6. Two players: Pro Controller or Wii Remote as player 2 with the
+   GamePad as player 1 (split screen), and with the GamePad switched off
+   (the first remote should become player 1).
+7. Saves: change the music volume, the music switch and a custom kart,
+   close the game from HOME, start it again: still set?
+   Or run `savetest`: first start should log `DKU SAVETEST: WROTE`,
+   the second `DKU SAVETEST: PASS` (udplogserver; on screen nothing shows).
+   A PC save (`~/.local/share/hiraethclub/DreamKartsU/DREAMKARTS.vmu`) copied
+   to `SD:/wiiu/apps/DreamKartsU/` should load too: the files are the same.
+
+### Results
+
+(Write here.)

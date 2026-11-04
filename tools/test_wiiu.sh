@@ -1,7 +1,11 @@
 #!/bin/sh
-# Wii U check (PORT_PLAN.md M3): the Wii U builds compile with -Wall -Wextra
-# and no warnings; each track's autotest build races to "DK AUTOTEST: PASS"
-# in Cemu; the release build boots to the title. Exit code is the verdict.
+# Wii U check (PORT_PLAN.md M3, M4): the Wii U builds compile with -Wall
+# -Wextra and no warnings; each track's autotest build races to "DK
+# AUTOTEST: PASS" in Cemu with sound (AX played the mix for most of the
+# race, effects audible and, when the .wuhb carries music, a song started
+# and audible); the save check (port/savetest.c) writes its settings on
+# one boot and reads them all back on the next; the release build boots
+# to the title. Exit code is the verdict.
 #
 #   tools/test_wiiu.sh                 every raceable track
 #   TRACKS="0 7" tools/test_wiiu.sh    some tracks only
@@ -30,6 +34,7 @@ build() {
 }
 
 build release || fail=1
+build savetest VARIANT=savetest || fail=1
 for t in $TRACKS; do build "t$t" VARIANT=autotest DK_AT_TRACK="$t" || fail=1; done
 [ $fail = 0 ] && echo "test_wiiu: builds clean (release and ${TRACKS} autotest)"
 if [ "${CEMU:-1}" = 0 ] || [ $fail != 0 ]; then
@@ -53,13 +58,46 @@ for t in $TRACKS; do
 done
 wait
 
+# "ok", or what is wrong with a race's sound. AX's count of seconds
+# played must reach half the race's length: Cemu consumed the mix.
+music=$(ls build/wiiu-gx2-autotest-t*/content/music/01.mp3 2>/dev/null | head -1)
+sound_verdict() {
+    ax=$(grep 'DKU AX: [0-9]* s played' "$1" | tail -1 | sed -E 's/.*: ([0-9]+) s.*/\1/')
+    race=$(grep -m1 'player finish' "$1" | sed -E 's/.*finish ([0-9]+).*/\1/')
+    [ -n "$ax" ] || { echo "AX never played"; return; }
+    [ -n "$race" ] && [ "$ax" -lt $((race / 2)) ] && { echo "AX played ${ax}s of a ${race}s race"; return; }
+    a=$(grep 'DKU AUDIO:' "$1" | tail -1)
+    sp=$(echo "$a" | sed -E 's/.*effects peak ([0-9]+).*/\1/')
+    mp=$(echo "$a" | sed -E 's/.*music peak ([0-9]+).*/\1/')
+    [ "${sp:-0}" -gt 1000 ] || { echo "effects silent"; return; }
+    if [ -n "$music" ]; then
+        grep -qE 'DK AUTOTEST: music: [1-9][0-9]* CD-DA tracks, [1-9][0-9]* songs started, [0-9]+ ended, 0 play' "$1" ||
+            { echo "music did not start"; return; }
+        [ "${mp:-0}" -gt 1000 ] || { echo "music silent"; return; }
+    fi
+    echo ok
+}
+
+[ -n "$music" ] || echo "test_wiiu: no music in the .wuhb (tools/build_music.py): checking effects only"
 for t in $TRACKS; do
     log=$LOGDIR/cemu-t$t/log.txt
     name=$(grep -m1 -oE 'DreamKarts track: [^,]*' "$log" 2>/dev/null | sed 's/DreamKarts track: //')
     if grep -q 'DK AUTOTEST: PASS' "$log" 2>/dev/null; then verdict=PASS; else verdict=FAIL; fail=1; fi
+    snd=$(sound_verdict "$log")
+    if [ "$snd" != ok ]; then verdict="FAIL ($snd)"; fail=1; fi
     printf 'track %s %-16s %s %s\n' "$t" "${name:-?}" "$verdict" \
         "$(grep -m1 'player finish' "$log" 2>/dev/null | sed 's/DK AUTOTEST: //')"
 done
+
+# Saves: two boots on one emulated SD card, empty at first.
+sd=$LOGDIR/sd-save
+rm -rf "$sd"
+st1=$(VERDICT='DKU SAVETEST: [A-Z]+' CEMU_SD=$sd tools/cemu_run.sh build/wiiu-gx2-savetest/DreamKartsU.wuhb 60 \
+    "$LOGDIR/cemu-save1" 60 2>/dev/null | grep -oE 'DKU SAVETEST: [A-Z]+' | sed 's/.*: //')
+st2=$(VERDICT='DKU SAVETEST: [A-Z]+' CEMU_SD=$sd tools/cemu_run.sh build/wiiu-gx2-savetest/DreamKartsU.wuhb 60 \
+    "$LOGDIR/cemu-save2" 60 2>/dev/null | grep -oE 'DKU SAVETEST: [A-Z]+' | sed 's/.*: //')
+if [ "$st1" = WROTE ] && [ "$st2" = PASS ]; then echo "saves: written, Cemu restarted, read back"
+else echo "saves: FAIL (first boot ${st1:-nothing}, second ${st2:-nothing})"; fail=1; fi
 
 # Release: boots, finds the GamePad, reaches the title (frames go by).
 out=$LOGDIR/cemu-release

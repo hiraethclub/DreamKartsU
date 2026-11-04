@@ -270,18 +270,24 @@ not depend on her results.
   upstream. Two-player split screen with any two controllers.
 - Rumble: GamePad motor for the `rumble.c` events.
 - Audio: shared software mixer for effects, kart loops and pitch changes
-  (`audio_sfx_pitch`, `audio_plane`); music streamed from OGG with
-  stb_vorbis (public domain) on a worker thread; fades and the jukebox
-  behaviour from `audio.c`. Output via SDL2 audio if the wiiu-sdl2 package
-  works cleanly with GX2 owning the display, else AX (`sndcore2`).
+  (`audio_sfx_pitch`, `audio_plane`); music streamed on a worker thread;
+  fades and the jukebox behaviour from `audio.c`. ~~OGG with stb_vorbis~~:
+  the MP3s themselves with dr_mp3 (public domain), since this machine has
+  no Vorbis encoder or ffmpeg and playing the source files avoids a second
+  lossy encode. ~~SDL2 audio~~: AX (`sndcore2`), since there is no
+  wiiu-sdl2 here. (Changed at M4, see the log.)
 - Music build step: reuse upstream `tools/build_music.py` download and
-  checksum logic, output OGG instead of CD-DA WAV.
-- Saves: same data `save.c` keeps, to `fs:/vol/external01/wiiu/apps/DreamKartsU/save.bin`
-  (SD), explicit byte order, atomic write (temp file then rename).
+  checksum logic; copy the MP3s and measure their loudness instead of
+  pressing CD-DA WAVs.
+- Saves: same data `save.c` keeps, to
+  `fs:/vol/external01/wiiu/apps/DreamKartsU/DREAMKARTS.vmu` (SD), explicit
+  byte order, atomic write (temp file then rename). Upstream saves
+  settings only (name, music, volume, custom kart), no race records.
 - (Chat entry moved to M6, Aisling 2026-11-04: only online play uses it.)
 
 **Done when:** host autotest still passes; Wii U build compiles; sound
-plays in Cemu; settings and records survive a restart in Cemu. Tag `m4`.
+plays in Cemu; settings ~~and records~~ survive a restart in Cemu (there
+are no records to save). Tag `m4`.
 
 ### M5. Complete offline game
 
@@ -399,6 +405,9 @@ At tags `m3`, `m5`, `m6`, `m7`:
   asset download at M4. The rule still stands for game builds: no build
   ever connects to dcvmu.com.
 
+- **Console questions (M4):** does GamePad rumble feel right (pattern
+  re-sent every 20 frames, assumed to last at least that long)? Sound on
+  the console: crackle or gaps? Sheet: `TESTING.md` m4.
 - **M3 hardware test (2026-11-04):** the m3 builds are ready to try on
   the console. What to check and where to write results: `TESTING.md`.
 
@@ -600,3 +609,25 @@ At tags `m3`, `m5`, `m6`, `m7`:
 - 2026-11-04: Plan change (Aisling): chat entry moves from M4 to M6.
   Only online play uses it, and M4 without it gets the console build to
   a state worth testing sooner (sound, music, controllers, rumble).
+- 2026-11-04: **M4 in progress (not tagged: full `tools/test_wiiu.sh`
+  run not yet confirmed).**
+  - Music: `tools/build_music.py` fetches the songs with upstream's own
+    manifest/sha256 code (one-off download, allowed above) into `music/`
+    (not in git) and measures loudness (`tools/music_level.c`) into
+    `port/music_levels.h`. `cdda_shim.c` plays `music/NN.mp3` as the
+    disc's tracks (dr_mp3), levelled and limited. Plan changed: MP3s
+    instead of OGG (no encoder here), AX instead of SDL2 (no wiiu-sdl2).
+  - Wii U: `audio_ax.c` (AX, two voices), KPAD controllers on ports 1-3,
+    GamePad and remote rumble, music in the `.wuhb` content folder.
+    wut's `nanosleep` in extra threads crashed Cemu; Wii U sleeps use
+    `OSSleepTicks`.
+  - Saves: the shim stores save.c's checksum little-endian, so PC and
+    Wii U save files are identical. `tools/test_saves.sh` PASS (x86 and
+    big-endian). Wii U save test in Cemu: WROTE then PASS, file identical
+    to the PC's.
+  - Checks so far: host null and GL autotests PASS on all 8 tracks with
+    the new sound check; Emerald Beach autotest PASS in Cemu with AX
+    playing and music audible. Still to do: confirm the full
+    `tools/test_wiiu.sh`, rerun `test_be.sh` and `capture_menus.sh`,
+    then tag `m4`.
+

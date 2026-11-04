@@ -16,6 +16,15 @@ VARIANT_FLAGS_release :=
 VARIANT_FLAGS_autotest := -DDK_AUTOTEST
 VARIANT_FLAGS_capture := -DDK_AUTOTEST -DDK_CAPTURE
 VARIANT_FLAGS_xfcheck := -DDK_AUTOTEST -DDK_XF_CHECK
+VARIANT_FLAGS_savetest :=
+
+# The save check (port/savetest.c): upstream save.c on its own with the
+# shim, under the platform's own init and backend.
+ifeq ($(VARIANT),savetest)
+UP_SOURCES := save.c
+PORT_SOURCES := port/savetest.c port/xform_c.c port/shim/pvr_ta.c port/shim/kos_shim.c port/shim/snd_shim.c \
+	port/shim/cdda_shim.c third_party/sh4zam/source/sw/shz_xmtrx_sw.c
+endif
 
 # Same language and warnings as upstream; -fsigned-char because SH-4 char
 # is signed and PowerPC char is not (PORT_PLAN.md 1.2).

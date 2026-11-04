@@ -54,14 +54,19 @@ static void fill(uint32_t at, uint32_t n) {
 
 static void *feeder(void *arg) {
     (void)arg;
-    uint32_t wpos = LEAD, last = 0;
+    uint32_t wpos = LEAD;
+#ifdef DK_AUTOTEST
+    uint32_t last = 0;
     uint64_t played = 0, report = AUDIO_MIX_RATE;
+#endif
     while(run) {
         AXVoiceOffsets off;
         AXGetVoiceOffsets(voice[0], &off);
         uint32_t play = off.currentOffset % RING;
+#ifdef DK_AUTOTEST
         played += (play + RING - last) % RING;
         last = play;
+#endif
         uint32_t ahead = (wpos + RING - play) % RING;
         if(ahead > LEAD + CHUNK) ahead = 0;   /* overtaken (a stall): start afresh at the play position */
         if(!ahead) wpos = play;

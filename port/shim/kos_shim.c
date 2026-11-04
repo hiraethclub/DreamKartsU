@@ -273,7 +273,30 @@ int vmufs_free_blocks(maple_device_t *dev) {
     return 200;
 }
 
-/* ---- VMU packages: "DKUP", data length little-endian, data ---- */
+/* ---- VMU packages: "DKUP", data length little-endian, data ----
+
+   save.c's record (upstream SaveRecord) is bytes apart from its uint32_t
+   check, which it stores in the CPU's order. The file keeps it
+   little-endian, as the Dreamcast writes it, so a save moves between the
+   PC and the Wii U builds: swapped on the way in and out on a big-endian
+   CPU. Version 1 records keep the check at byte 24, version 2 at 32. */
+
+static void record_order(uint8_t *d, size_t n) {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    if(n < 28 || memcmp(d, "DKSV", 4)) return;
+    size_t at = d[4] == 1 ? 24 : d[4] == 2 ? 32 : 0;
+    if(!at || n < at + 4) return;
+    uint8_t t = d[at];
+    d[at] = d[at + 3];
+    d[at + 3] = t;
+    t = d[at + 1];
+    d[at + 1] = d[at + 2];
+    d[at + 2] = t;
+#else
+    (void)d;
+    (void)n;
+#endif
+}
 
 int vmu_pkg_build(vmu_pkg_t *src, uint8_t **dst, int *dst_size) {
     int n = 8 + src->data_len;
@@ -283,6 +306,7 @@ int vmu_pkg_build(vmu_pkg_t *src, uint8_t **dst, int *dst_size) {
     uint32_t len = (uint32_t)src->data_len;
     for(int i = 0; i < 4; i++) out[4 + i] = (uint8_t)(len >> (8 * i));
     memcpy(out + 8, src->data, (size_t)src->data_len);
+    record_order(out + 8, (size_t)src->data_len);
     *dst = out;
     *dst_size = n;
     return 0;
@@ -293,6 +317,7 @@ int vmu_pkg_parse(void *data, size_t data_size, vmu_pkg_t *pkg) {
     if(data_size < 8 || memcmp(d, "DKUP", 4)) return -1;
     uint32_t len = d[4] | d[5] << 8 | d[6] << 16 | (uint32_t)d[7] << 24;
     if(len > data_size - 8) return -1;
+    record_order((uint8_t *)data + 8, len);
     memset(pkg, 0, sizeof(*pkg));
     strcpy(pkg->app_id, "DreamKartsU");
     pkg->data_len = (int)len;
