@@ -597,8 +597,6 @@ At tags `m3`, `m5`, `m6`, `m7`:
     all PASS.
   - Not in M3 (M4): sound (no AX yet), Pro Controller / Wii Remote,
     rumble, keyboard.
-
-
 - 2026-11-04: Plan change (Aisling): chat entry moves from M4 to M6.
   Only online play uses it, and M4 without it gets the console build to
   a state worth testing sooner (sound, music, controllers, rumble).
