@@ -609,8 +609,7 @@ At tags `m3`, `m5`, `m6`, `m7`:
 - 2026-11-04: Plan change (Aisling): chat entry moves from M4 to M6.
   Only online play uses it, and M4 without it gets the console build to
   a state worth testing sooner (sound, music, controllers, rumble).
-- 2026-11-04: **M4 in progress (not tagged: full `tools/test_wiiu.sh`
-  run not yet confirmed).**
+- 2026-11-04: **M4 done.** Tag `m4`.
   - Music: `tools/build_music.py` fetches the songs with upstream's own
     manifest/sha256 code (one-off download, allowed above) into `music/`
     (not in git) and measures loudness (`tools/music_level.c`) into
@@ -625,9 +624,13 @@ At tags `m3`, `m5`, `m6`, `m7`:
     Wii U save files are identical. `tools/test_saves.sh` PASS (x86 and
     big-endian). Wii U save test in Cemu: WROTE then PASS, file identical
     to the PC's.
-  - Checks so far: host null and GL autotests PASS on all 8 tracks with
-    the new sound check; Emerald Beach autotest PASS in Cemu with AX
-    playing and music audible. Still to do: confirm the full
-    `tools/test_wiiu.sh`, rerun `test_be.sh` and `capture_menus.sh`,
-    then tag `m4`.
+  - Checks: host null and GL autotests PASS on all 8 tracks with the new
+    sound check (effects and music audible); `tools/test_be.sh` PASS;
+    `tools/capture_menus.sh` PASS; `tools/test_saves.sh` PASS;
+    `tools/test_wiiu.sh` PASS: no warnings, all 8 tracks race to PASS in
+    Cemu with AX playing the mix and music audible, settings survive a
+    Cemu restart, release boots to the title.
+  - Not tested anywhere but the console: Pro / Classic / Wii Remote input
+    and rumble (Cemu here has no such controllers set up). Sheet:
+    `TESTING.md` m4.
 
