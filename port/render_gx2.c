@@ -5,28 +5,43 @@
    - Lists draw in the PVR's order, OP, PT, TR, each in submission order.
    - Depth is the PVR's 1/w as render_gl.c does it: clip z is the constant
      DEPTH_K (port/shaders/main.vert), so window depth is DEPTH_K / w, with
-     halfZ clip control. FLOAT_D24_S8, cleared to 0 (infinitely far) by a
-     full-screen quad: Cemu 2.6 ignores GX2ClearDepthStencilEx's depth
-     value (it cleared above every depth the game draws, so nothing passed
-     GREATER), and a draw behaves the same on any implementation.
+     halfZ clip control. A 32-bit float depth with stencil, because
+     FLOAT_D24_S8 is a real 24-bit float on the console: 4 exponent bits,
+     nothing below 2^-15, so everything past w = 256 went to 0 and the sea
+     won over the land seen from high up. Cemu stores it in 32 bits and
+     never showed this. Cleared to 0 (infinitely far) by a full-screen quad:
+     Cemu 2.6 ignores GX2ClearDepthStencilEx's depth value (it cleared above
+     every depth the game draws, so nothing passed GREATER), and a draw
+     behaves the same on any implementation.
    - Textures: de-twiddled from texture memory to RGBA8, reading the PVR's
      16-bit texels little-endian, with the KOS mip chain; each level goes
      through a linear staging surface and GX2CopySurface does the tiling.
      Cached by address, re-uploaded when pvr_txr_load bumps the block's
-     generation.
+     generation. Uploads run before the frame's drawing starts: GX2CopySurface
+     changes GPU state, and doing it mid-frame broke whatever drew next.
+     Memory the GPU writes is flushed from the CPU's cache once allocated;
+     otherwise an old dirty line could later land on top of the GPU's data.
    - Vertex colours (ARGB words, big-endian here) are fetched 8-in-32
      swapped, so the shaders see b, g, r, a as on the little-endian host.
    - Uniform blocks are written little-endian, as the GPU reads them, from a
-     ring reset each frame; GX2_SHADER_MODE_UNIFORM_BLOCK is set after every
+     ring reset each frame, flushed block by block with one GPU cache
+     invalidate per frame; GX2_SHADER_MODE_UNIFORM_BLOCK is set after every
      context switch (the console needs it; Cemu forgives forgetting it).
    - Modifier volumes are the PVR's cheap shadow in stencil, as in
      render_gl.c (see there).
-   - Every frame ends with GX2DrawDone, so the CPU may reuse vertex, uniform
-     and staging memory at once. Simple; overlap is an optimisation for
-     later if profiling asks for it. */
+   - The CPU and GPU overlap: WHBGfxFinishRender's GX2DrawDone made the game
+     update, the commands and the GPU's work share one 16.7 ms between them.
+     Now each frame has its own set of vertex, uniform and staging memory
+     (frame_set_t), waited for by timestamp before reuse, and the CPU starts
+     the next frame while the GPU draws this one, at most one swap ahead of
+     the display. */
 #include <coreinit/cache.h>
+#include <coreinit/core.h>
+#include <coreinit/thread.h>
+#include <coreinit/time.h>
 #include <gx2/clear.h>
 #include <gx2/context.h>
+#include <gx2/display.h>
 #include <gx2/draw.h>
 #include <gx2/enum.h>
 #include <gx2/event.h>
@@ -36,6 +51,7 @@
 #include <gx2/shaders.h>
 #include <gx2/state.h>
 #include <gx2/surface.h>
+#include <gx2/swap.h>
 #include <gx2/texture.h>
 #include <gx2/utils.h>
 #include <malloc.h>
@@ -45,6 +61,8 @@
 #include <string.h>
 #include <whb/gfx.h>
 
+#include "build_overlay.h"
+#include "perf_wiiu.h"
 #include "plat.h"
 #include "ta.h"
 
@@ -65,12 +83,32 @@ static GX2ColorBuffer cb;
 static GX2DepthBuffer db;
 static GX2Texture fb_tex;
 static GX2Sampler fb_sampler;
-static ta_vertex_t *vbuf;
-static ta_mod_vertex_t *mod_vbuf;
 static float *blit_vbuf;
-static uint8_t *uring;
-static size_t uring_used;
-static bool uring_full;
+
+/* What one frame writes and the GPU then reads, until its fence retires. */
+#define FRAME_SETS 2
+typedef struct {
+    ta_vertex_t *vbuf;
+    ta_mod_vertex_t *mod_vbuf;
+    uint8_t *uring;
+    size_t uring_used;
+    bool uring_full;
+    void *staging[1024];     /* freed when the fence retires */
+    int nstaging;
+    OSTime fence;            /* 0: never submitted */
+} frame_set_t;
+
+static frame_set_t sets[FRAME_SETS];
+static frame_set_t *cur = &sets[0];
+
+/* This frame so far, for the test log. */
+static perf_frame_t pf;
+static uint64_t t_present_end, t_draw_start;
+static OSTime last_fence;
+#ifdef DKU_BUILD_OVERLAY
+static ta_vertex_t overlay[BUILD_OVERLAY_MAX_VERTS];
+static int noverlay;
+#endif
 
 /* ---- helpers ---- */
 
@@ -83,18 +121,28 @@ static void *gpu_alloc(size_t align, size_t size) {
     return p;
 }
 
+/* For memory only the GPU writes: no stale dirty cache line may later be
+   evicted on top of what it wrote. Heap memory often has some. */
+static void *gpu_alloc_target(size_t align, size_t size) {
+    void *p = gpu_alloc(align, size);
+    DCFlushRange(p, size);
+    return p;
+}
+
 /* Little-endian 32-bit words for a uniform block, from the ring. */
 static void *uniforms(const void *data, size_t size) {
-    size_t at = (uring_used + GX2_UNIFORM_BLOCK_ALIGNMENT - 1) & ~(size_t)(GX2_UNIFORM_BLOCK_ALIGNMENT - 1);
+    size_t at = (cur->uring_used + GX2_UNIFORM_BLOCK_ALIGNMENT - 1) & ~(size_t)(GX2_UNIFORM_BLOCK_ALIGNMENT - 1);
     if(at + size > UNIFORM_RING) {
-        uring_full = true;
+        cur->uring_full = true;
         at = 0;   /* overwrite: wrong colours somewhere, not a crash */
     }
-    uint32_t *dst = (uint32_t *)(uring + at);
+    uint32_t *dst = (uint32_t *)(cur->uring + at);
     const uint32_t *src = data;
     for(size_t i = 0; i < size / 4; i++) dst[i] = __builtin_bswap32(src[i]);
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU | GX2_INVALIDATE_MODE_UNIFORM_BLOCK, dst, size);
-    uring_used = at + size;
+    /* The GPU's own cache is invalidated once a frame (backend_draw): one
+       surface sync per header was a GPU stall per header. */
+    DCFlushRange(dst, size);
+    cur->uring_used = at + size;
     return dst;
 }
 
@@ -144,14 +192,17 @@ typedef struct {
 #define TEX_SLOTS 2048
 static tex_entry_t texes[TEX_SLOTS];
 
-/* Staging surfaces waiting for GX2DrawDone before they can be freed. */
-static void *staging[1024];
-static int nstaging;
-
+/* Morton spread of a coordinate up to 1023, from a table: called per texel. */
 static uint32_t spread(uint32_t v) {
-    uint32_t r = 0;
-    for(int b = 0; v >> b; b++) r |= ((v >> b) & 1) << (2 * b);
-    return r;
+    static uint32_t table[1024];
+    if(!table[1]) {
+        for(uint32_t i = 0; i < 1024; i++) {
+            uint32_t r = 0;
+            for(int b = 0; i >> b; b++) r |= ((i >> b) & 1) << (2 * b);
+            table[i] = r;
+        }
+    }
+    return table[v & 1023];
 }
 
 /* One PVR texel (little-endian 16 bits) as RGBA8, bytes r, g, b, a. */
@@ -181,7 +232,7 @@ static uint32_t texel(const uint8_t *p, int fmt) {
 /* A w x h level from PVR order (twiddled: y in the low Morton bit; a
    rectangle is square blocks along its long side) into texture level lv. */
 static void upload_level(GX2Texture *t, int lv, const uint8_t *in, int w, int h, int fmt, bool twiddled) {
-    if(nstaging == (int)(sizeof(staging) / sizeof(staging[0]))) return;
+    if(cur->nstaging == (int)(sizeof(cur->staging) / sizeof(cur->staging[0]))) return;
     GX2Surface s;
     memset(&s, 0, sizeof(s));
     s.dim = GX2_SURFACE_DIM_TEXTURE_2D;
@@ -206,7 +257,7 @@ static void upload_level(GX2Texture *t, int lv, const uint8_t *in, int w, int h,
         }
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, px, s.imageSize);
     GX2CopySurface(&s, 0, 0, &t->surface, (uint32_t)lv, 0);
-    staging[nstaging++] = px;
+    cur->staging[cur->nstaging++] = px;
 }
 
 static GX2Texture *new_texture(int w, int h, int levels) {
@@ -225,12 +276,13 @@ static GX2Texture *new_texture(int w, int h, int levels) {
     t->compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
     GX2CalcSurfaceSizeAndAlignment(&t->surface);
     GX2InitTextureRegs(t);
-    t->surface.image = gpu_alloc(t->surface.alignment, t->surface.imageSize);
-    if(levels > 1) t->surface.mipmaps = gpu_alloc(t->surface.alignment, t->surface.mipmapSize);
+    t->surface.image = gpu_alloc_target(t->surface.alignment, t->surface.imageSize);
+    if(levels > 1) t->surface.mipmaps = gpu_alloc_target(t->surface.alignment, t->surface.mipmapSize);
     return t;
 }
 
 static void upload(tex_entry_t *e, const pvr_poly_cxt_t *c, const pvr_shim_block_t *blk) {
+    uint64_t t0 = plat_time_us();
     int fmt = c->txr.format;
     bool twiddled = !(fmt & PVR_TXRFMT_NONTWIDDLED);
     const uint8_t *src = c->txr.base;
@@ -255,6 +307,8 @@ static void upload(tex_entry_t *e, const pvr_poly_cxt_t *c, const pvr_shim_block
     GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, t->surface.image, t->surface.imageSize);
     if(t->surface.mipmaps) GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, t->surface.mipmaps, t->surface.mipmapSize);
     e->gen = blk->generation;
+    pf.uploads++;
+    pf.upload_us += (uint32_t)(plat_time_us() - t0);
 }
 
 static GX2Texture *texture_for(const pvr_poly_cxt_t *c) {
@@ -402,7 +456,7 @@ void backend_init(void) {
     cb.viewNumSlices = 1;
     GX2CalcSurfaceSizeAndAlignment(&cb.surface);
     GX2InitColorBufferRegs(&cb);
-    cb.surface.image = gpu_alloc(cb.surface.alignment, cb.surface.imageSize);
+    cb.surface.image = gpu_alloc_target(cb.surface.alignment, cb.surface.imageSize);
 
     memset(&db, 0, sizeof(db));
     db.surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
@@ -410,7 +464,7 @@ void backend_init(void) {
     db.surface.height = FB_H;
     db.surface.depth = 1;
     db.surface.mipLevels = 1;
-    db.surface.format = GX2_SURFACE_FORMAT_FLOAT_D24_S8;
+    db.surface.format = GX2_SURFACE_FORMAT_FLOAT_X8_X24;   /* D32F, S8: the top of the file */
     db.surface.aa = GX2_AA_MODE1X;
     db.surface.use = GX2_SURFACE_USE_DEPTH_BUFFER;
     db.surface.tileMode = GX2_TILE_MODE_DEFAULT;
@@ -419,7 +473,7 @@ void backend_init(void) {
     db.stencilClear = 0;
     GX2CalcSurfaceSizeAndAlignment(&db.surface);
     GX2InitDepthBufferRegs(&db);
-    db.surface.image = gpu_alloc(db.surface.alignment, db.surface.imageSize);
+    db.surface.image = gpu_alloc_target(db.surface.alignment, db.surface.imageSize);
 
     memset(&fb_tex, 0, sizeof(fb_tex));
     fb_tex.surface = cb.surface;
@@ -430,20 +484,32 @@ void backend_init(void) {
     GX2InitTextureRegs(&fb_tex);
     GX2InitSampler(&fb_sampler, GX2_TEX_CLAMP_MODE_CLAMP, GX2_TEX_XY_FILTER_MODE_LINEAR);
 
-    vbuf = gpu_alloc(GX2_VERTEX_BUFFER_ALIGNMENT, MAX_FRAME_VERTS * sizeof(ta_vertex_t));
-    mod_vbuf = gpu_alloc(GX2_VERTEX_BUFFER_ALIGNMENT, MAX_FRAME_MOD_VERTS * sizeof(ta_mod_vertex_t));
-    uring = gpu_alloc(GX2_UNIFORM_BLOCK_ALIGNMENT, UNIFORM_RING);
+    for(int i = 0; i < FRAME_SETS; i++) {
+        sets[i].vbuf = gpu_alloc(GX2_VERTEX_BUFFER_ALIGNMENT, (MAX_FRAME_VERTS + BUILD_OVERLAY_MAX_VERTS) * sizeof(ta_vertex_t));
+        sets[i].mod_vbuf = gpu_alloc(GX2_VERTEX_BUFFER_ALIGNMENT, MAX_FRAME_MOD_VERTS * sizeof(ta_mod_vertex_t));
+        sets[i].uring = gpu_alloc(GX2_UNIFORM_BLOCK_ALIGNMENT, UNIFORM_RING);
+    }
+#ifdef DKU_BUILD_OVERLAY
+    noverlay = build_overlay_verts(overlay);
+#endif
     /* Full-screen strip: x, y, u, v. Row 0 of the frame is its top. */
     static const float quad[16] = {-1, -1, 0, 1, 1, -1, 1, 1, -1, 1, 0, 0, 1, 1, 1, 0};
     blit_vbuf = gpu_alloc(GX2_VERTEX_BUFFER_ALIGNMENT, sizeof(quad));
     memcpy(blit_vbuf, quad, sizeof(quad));
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, blit_vbuf, sizeof(quad));
-    printf("DKU GX2: up, hdr block %u, frame block %u, tex %u\n", (unsigned)loc_hdr, (unsigned)loc_frame,
-           (unsigned)loc_tex);
+    printf("DKU GX2: up, hdr block %u, frame block %u, tex %u, main thread on core %u\n", (unsigned)loc_hdr,
+           (unsigned)loc_frame, (unsigned)loc_tex, (unsigned)OSGetCoreId());
 }
 
-/* Every present ended in GX2DrawDone, and by now ProcUI has taken the
-   foreground away, so a GX2DrawDone here could wait forever. */
+/* The GPU's work has ended: until the last flush's timestamp retires, up to
+   200 ms so it cannot hang the HOME menu. From the ProcUI release callback. */
+void gx2_wait_idle(void) {
+    OSTime want = GX2GetLastSubmittedTimeStamp();
+    for(int i = 0; i < 200 && GX2GetRetiredTimeStamp() < want; i++) OSSleepTicks(OSMillisecondsToTicks(1));
+}
+
+/* gx2_wait_idle ran as the foreground left, and by now ProcUI has taken it
+   away, so a GX2DrawDone here could wait forever. */
 void backend_shutdown(void) {
     printf("DKU EXIT: graphics\n");
     WHBGfxShutdown();
@@ -464,10 +530,10 @@ static void set_frame_state(void) {
 static void draw_shadows(const ta_frame_t *f, const pvr_shim_state_t *st) {
     if(!st->shadow_enabled || !f->nvolumes) return;
     int n = f->nmod_verts < MAX_FRAME_MOD_VERTS ? f->nmod_verts : MAX_FRAME_MOD_VERTS;
-    memcpy(mod_vbuf, f->mod_verts, (size_t)n * sizeof(ta_mod_vertex_t));
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, mod_vbuf, (size_t)n * sizeof(ta_mod_vertex_t));
+    memcpy(cur->mod_vbuf, f->mod_verts, (size_t)n * sizeof(ta_mod_vertex_t));
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, cur->mod_vbuf, (size_t)n * sizeof(ta_mod_vertex_t));
     use_group(&g_mod);
-    GX2SetAttribBuffer(0, (uint32_t)n * sizeof(ta_mod_vertex_t), sizeof(ta_mod_vertex_t), mod_vbuf);
+    GX2SetAttribBuffer(0, (uint32_t)n * sizeof(ta_mod_vertex_t), sizeof(ta_mod_vertex_t), cur->mod_vbuf);
     GX2SetScissor(0, 0, FB_W, FB_H);   /* r_modvol cuts volumes to their view */
     GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
     blend(false, GX2_BLEND_MODE_ONE, GX2_BLEND_MODE_ZERO);
@@ -498,9 +564,60 @@ static void draw_shadows(const ta_frame_t *f, const pvr_shim_state_t *st) {
     GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, 0, 1);
 }
 
+#ifdef DKU_BUILD_OVERLAY
+/* The build label over everything, its vertices after the frame's. */
+static void draw_build_overlay(int first) {
+    static const float hdr[8] = {0.0f, 0.0f, 0.0f, 2.0f /* PVR_FOG_DISABLE */, 1.0f, 0.0f, -1.0f, 0.0f};
+    memcpy(cur->vbuf + first, overlay, (size_t)noverlay * sizeof(ta_vertex_t));
+    DCFlushRange(cur->vbuf + first, (size_t)noverlay * sizeof(ta_vertex_t));
+    GX2SetAttribBuffer(0, (uint32_t)(first + noverlay) * sizeof(ta_vertex_t), sizeof(ta_vertex_t), cur->vbuf);
+    GX2SetPixelUniformBlock(loc_hdr, sizeof(hdr), uniforms(hdr, sizeof(hdr)));
+    GX2SetScissor(0, 0, FB_W, FB_H);
+    GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
+    blend(true, GX2_BLEND_MODE_SRC_ALPHA, GX2_BLEND_MODE_INV_SRC_ALPHA);
+    depth_stencil(false, false, GX2_COMPARE_FUNC_ALWAYS, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP, 0xff, 0, 0);
+    GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, (uint32_t)noverlay, (uint32_t)first, 1);
+}
+#endif
+
+/* Wait until this frame's set is free again, and take it. */
+static void begin_set(void) {
+    uint64_t t0 = plat_time_us();
+    pf.gpu_late = last_fence && GX2GetRetiredTimeStamp() < last_fence;
+    if(cur->fence) GX2WaitTimeStamp(cur->fence);
+    for(int i = 0; i < cur->nstaging; i++) free(cur->staging[i]);
+    cur->nstaging = 0;
+    cur->uring_used = 0;
+    if(cur->uring_full) {
+        static int warned;
+        if(warned++ < 4) fprintf(stderr, "DKU GX2: uniform ring overflowed\n");
+        cur->uring_full = false;
+    }
+    pf.gpuwait = (uint32_t)(plat_time_us() - t0);
+}
+
 void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
-    WHBGfxBeginRender();
+    t_draw_start = plat_time_us();
+    pf.game = t_present_end ? (uint32_t)(t_draw_start - t_present_end) : 0;
+    begin_set();
+    uint64_t t_encode = plat_time_us();
+
+    /* Every texture this frame uses is ready before drawing begins. */
     set_frame_state();
+    uint32_t uploads_before = pf.uploads;
+    for(int l = 0; l < TA_LISTS; l++) {
+        int last = -1;
+        for(int i = 0; i < f->nbatches[l]; i++) {
+            int h = f->batches[l][i].hdr;
+            if(h == last) continue;
+            last = h;
+            const pvr_poly_cxt_t *c = &f->hdrs[h].cxt;
+            if(c->txr.enable != 0 && c->txr.base) texture_for(c);
+        }
+    }
+    if(pf.uploads != uploads_before) set_frame_state();   /* the copies change state */
+    GX2Invalidate(GX2_INVALIDATE_MODE_UNIFORM_BLOCK, cur->uring, UNIFORM_RING);
+
     GX2ClearColor(&cb, st->bg[0], st->bg[1], st->bg[2], 1.0f);
     GX2ClearDepthStencilEx(&db, 0.0f, 0, GX2_CLEAR_FLAGS_BOTH);
     set_frame_state();   /* the clears change state */
@@ -516,8 +633,8 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
 
     int n = f->nverts < MAX_FRAME_VERTS ? f->nverts : MAX_FRAME_VERTS;
-    memcpy(vbuf, f->verts, (size_t)n * sizeof(ta_vertex_t));
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, vbuf, (size_t)n * sizeof(ta_vertex_t));
+    memcpy(cur->vbuf, f->verts, (size_t)n * sizeof(ta_vertex_t));
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, cur->vbuf, (size_t)n * sizeof(ta_vertex_t));
 
     struct {
         float fog_color[4], fog_far[4], fog_table[33 * 4];
@@ -538,7 +655,7 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
         if(l == TA_TR) draw_shadows(f, st);
         use_group(&g_main);
         GX2SetPixelUniformBlock(loc_frame, sizeof(fr), frame_block);
-        GX2SetAttribBuffer(0, (uint32_t)n * sizeof(ta_vertex_t), sizeof(ta_vertex_t), vbuf);
+        GX2SetAttribBuffer(0, (uint32_t)n * sizeof(ta_vertex_t), sizeof(ta_vertex_t), cur->vbuf);
         for(int i = 0; i < f->nbatches[l]; i++) {
             const ta_batch_t *b = &f->batches[l][i];
             if(b->first + b->count > n) break;
@@ -553,6 +670,13 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
             GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, (uint32_t)b->count, (uint32_t)b->first, 1);
         }
     }
+#ifdef DKU_BUILD_OVERLAY
+    draw_build_overlay(n);
+#endif
+    pf.hdrs = (uint32_t)f->nhdrs;
+    pf.batches = (uint32_t)(f->nbatches[TA_OP] + f->nbatches[TA_PT] + f->nbatches[TA_TR]);
+    pf.tris = (uint32_t)(n / 3);
+    pf.draw = (uint32_t)(plat_time_us() - t_encode);
 }
 
 /* The frame, 4:3, centred on a target of w x h. */
@@ -576,6 +700,7 @@ static void blit_to(uint32_t w, uint32_t h) {
 }
 
 void backend_present(void) {
+    uint64_t t_present = plat_time_us();
     GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE, cb.surface.image,
                   cb.surface.imageSize);
     WHBGfxBeginRenderTV();
@@ -588,15 +713,33 @@ void backend_present(void) {
     WHBGfxClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     blit_to(drc->surface.width, drc->surface.height);
     WHBGfxFinishRenderDRC();
-    WHBGfxFinishRender();
-    GX2DrawDone();
-    for(int i = 0; i < nstaging; i++) free(staging[i]);
-    nstaging = 0;
-    uring_used = 0;
-    if(uring_full) {
-        static int warned;
-        if(warned++ < 4) fprintf(stderr, "DKU GX2: uniform ring overflowed\n");
-        uring_full = false;
+    /* WHBGfxFinishRender without its GX2DrawDone. */
+    GX2SwapScanBuffers();
+    GX2Flush();
+    GX2SetTVEnable(TRUE);
+    GX2SetDRCEnable(TRUE);
+    last_fence = cur->fence = GX2GetLastSubmittedTimeStamp();
+    cur = cur == &sets[0] ? &sets[1] : &sets[0];
+
+    /* Start the next frame when the swap before this one is on screen: the
+       next frame's commands and this frame's GPU work each get a whole
+       refresh. A timeout as in WHBGfxBeginRender, so nothing can hang here. */
+    uint64_t t_flip = plat_time_us();
+    pf.present = (uint32_t)(t_flip - t_present);
+    for(int i = 0; i < 10; i++) {
+        uint32_t swaps, flips;
+        OSTime last_flip, last_vsync;
+        GX2GetSwapStatus(&swaps, &flips, &last_flip, &last_vsync);
+        if(flips + 1 >= swaps) break;
+        GX2WaitForVsync();
     }
+    uint64_t now = plat_time_us();
+    pf.flipwait = (uint32_t)(now - t_flip);
+    if(t_present_end) {
+        pf.frame = (uint32_t)(now - t_present_end);
+        perf_frame(&pf);
+    }
+    t_present_end = now;
+    pf = (perf_frame_t){0};
     plat_frame_done();
 }

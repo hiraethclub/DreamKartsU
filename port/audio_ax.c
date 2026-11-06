@@ -24,6 +24,7 @@
 #include <string.h>
 
 #include "audio_mix.h"
+#include "perf_wiiu.h"
 
 #define RING 4096u   /* samples per channel: 85 ms */
 #define LEAD 2048u   /* kept written ahead of the play position: 43 ms */
@@ -34,6 +35,8 @@ static int16_t *ring[2];
 static pthread_t thread;
 static volatile bool run, want_pause, parked;
 static bool started;
+
+volatile uint32_t dku_ax_underruns;
 
 /* n <= CHUNK frames from the mixer into the rings at sample at. */
 static void fill(uint32_t at, uint32_t n) {
@@ -65,6 +68,8 @@ static void voices_state(AXVoiceState state) {
 
 static void *feeder(void *arg) {
     (void)arg;
+    /* Off core 1, where the game runs. */
+    OSSetThreadAffinity(OSGetCurrentThread(), OS_THREAD_ATTRIB_AFFINITY_CPU0);
     uint32_t wpos = LEAD;
 #ifdef DK_AUTOTEST
     uint32_t last = 0;
@@ -98,7 +103,10 @@ static void *feeder(void *arg) {
         last = play;
 #endif
         uint32_t ahead = (wpos + RING - play) % RING;
-        if(ahead > LEAD + CHUNK) ahead = 0;   /* overtaken (a stall): start afresh at the play position */
+        if(ahead > LEAD + CHUNK) {   /* overtaken (a stall): start afresh at the play position */
+            ahead = 0;
+            dku_ax_underruns++;
+        }
         if(!ahead) wpos = play;
         while(ahead < LEAD) {
             fill(wpos, CHUNK);

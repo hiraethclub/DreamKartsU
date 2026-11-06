@@ -18,6 +18,8 @@ VARIANT ?= release
 BACKEND ?= gx2
 DK_AT_TRACK ?=
 EXTRA_CFLAGS ?=
+# The "BUILD NNNN" label on screen, for the console testing phase: 0 removes it.
+BUILD_OVERLAY ?= 1
 
 CC := powerpc-eabi-gcc
 include sources.mk
@@ -25,7 +27,8 @@ include sources.mk
 ifeq ($(BACKEND),null)
 PORT_SOURCES += port/render_null.c port/plat_headless.c
 else ifeq ($(BACKEND),gx2)
-PORT_SOURCES += port/render_gx2.c port/plat_wiiu.c port/audio_ax.c
+PORT_SOURCES += port/render_gx2.c port/plat_wiiu.c port/audio_ax.c port/testlog.c port/perf_wiiu.c \
+	port/build_overlay.c
 else
 $(error BACKEND must be gx2 or null)
 endif
@@ -36,7 +39,8 @@ ELF := $(OUT)/DreamKartsU.elf
 
 MACHDEP := -DESPRESSO -mcpu=750 -meabi -mhard-float
 CFLAGS := $(COMMON_CFLAGS) $(MACHDEP) -ffunction-sections -D__WIIU__ -D__WUT__ \
-	$(VARIANT_FLAGS_$(VARIANT)) $(if $(DK_AT_TRACK),-DDK_AT_TRACK=$(DK_AT_TRACK)) $(EXTRA_CFLAGS)
+	$(VARIANT_FLAGS_$(VARIANT)) $(if $(DK_AT_TRACK),-DDK_AT_TRACK=$(DK_AT_TRACK)) \
+	$(if $(filter 1,$(BUILD_OVERLAY)),-DDKU_BUILD_OVERLAY) $(EXTRA_CFLAGS)
 CPPFLAGS := $(COMMON_CPPFLAGS) -I$(OUT) -I$(WUT_ROOT)/include
 LDFLAGS := $(MACHDEP) -specs=$(WUT_ROOT)/share/wut.specs -L$(WUT_ROOT)/lib
 LDLIBS := -lwut -lm
@@ -108,6 +112,15 @@ $(OUT)/port/blobs.o: port/blobs.S $(GEN)/textures.pak $(GEN)/sfx.pak
 $(OUT)/port/shaders/shaders.o: port/shaders/shaders.S $(addprefix port/shaders/,$(addsuffix .gsh,$(GSH)))
 	@mkdir -p $(dir $@)
 	$(CC) $(MACHDEP) -c -o $@ $<
+
+# The test build number: only testlog.c includes this, so a new number
+# rebuilds one file. tools/build_number.sh adds one when the sources change.
+DKU_BUILD := $(shell tools/build_number.sh)
+$(OUT)/port/testlog.o: $(OUT)/dku_build.h
+$(OUT)/dku_build.h: force
+	@mkdir -p $(OUT)
+	@printf '#define DKU_BUILD_NUMBER %s\n#define DKU_BUILD_SHA "%s"\n' $(DKU_BUILD) $(PORT_SHA) | cmp -s - $@ || \
+		printf '#define DKU_BUILD_NUMBER %s\n#define DKU_BUILD_SHA "%s"\n' $(DKU_BUILD) $(PORT_SHA) > $@
 
 $(OUT)/version.h: force
 	@mkdir -p $(OUT)

@@ -4,6 +4,19 @@ Results from the console, one section per tag (PORT_PLAN.md section 4).
 Write what you did, what happened, and add a phone photo for anything
 visual. Then tell Claude Code "results for mN are in TESTING.md".
 
+## Every test build: number and log
+
+The number bottom left of the screen is the build. Quote it when reporting.
+Each build writes its own log next to the game on the SD card:
+`SD:/wiiu/apps/DreamKartsU/DreamKartsU-build-NNNN.log`. Each boot adds to it,
+and it is written about once a second, so it survives a crash or a power-off
+apart from the last second. To read it live instead, run
+`/opt/devkitpro/tools/bin/udplogserver` on the PC.
+
+In the log, `PERF` is one line a second of frame timing (average/worst in ms),
+`HITCH` is a single frame over 20 ms and where its time went, and `DKU STATE:`
+marks each screen change.
+
 ## m3: first boot on the Wii U
 
 **Builds:** sent in the Claude Code conversation at tag `m3`, or in

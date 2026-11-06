@@ -405,6 +405,10 @@ At tags `m3`, `m5`, `m6`, `m7`:
   asset download at M4. The rule still stands for game builds: no build
   ever connects to dcvmu.com.
 
+- **Console retest (2026-11-06):** does the newest build (number bottom left)
+  cure the water, the stutter and the power-up glitches? Send
+  `DreamKartsU-build-NNNN.log` from the SD card's app folder, and a photo of
+  any power-up glitch left. Sheet: `TESTING.md`.
 - **Console questions (M4):** does GamePad rumble feel right (pattern
   re-sent every 20 frames, assumed to last at least that long)? Sound on
   the console: crackle or gaps? Sheet: `TESTING.md` m4.
@@ -645,3 +649,29 @@ At tags `m3`, `m5`, `m6`, `m7`:
   `tools/test_wiiu.sh` now checks it. All checks PASS.
 - 2026-11-06: **HOME confirmed fixed on the console** (Aisling). The fixes
   went in together, so which one cured it is not known.
+- 2026-11-06: **Console report: stutter, not 60 fps, power-up glitches,
+  water flooding the track select from high up** (Aisling). Changes, none
+  yet proven on the console, because Cemu showed none of the symptoms:
+  - Water: the depth buffer was `FLOAT_D24_S8`, a real 24-bit float on the
+    GPU with nothing below 2^-15, so far geometry lost its depth. Now
+    `FLOAT_X8_X24`, which is D32F with S8. Assumption: that is the cause.
+  - Speed: `WHBGfxFinishRender` ends in `GX2DrawDone`, so update, commands
+    and GPU work shared one refresh. The renderer now does its own swap and
+    pacing with two sets of frame memory, fenced by timestamp; the HOME path
+    waits for the GPU first (up to 200 ms). One GPU uniform cache invalidate
+    per frame instead of per header. Sound, music, save and log threads are
+    pinned off core 1.
+  - Power-ups (cause not proven): textures are first uploaded when first
+    used, which for power-ups means mid-race, and `GX2CopySurface` ran
+    mid-frame. Uploads now run before the frame's drawing, and GPU-written
+    memory is flushed from the CPU cache when allocated. De-twiddling uses a
+    table, to shorten that hitch.
+  - **Test log:** `SD:/wiiu/apps/DreamKartsU/DreamKartsU-build-NNNN.log`
+    (`port/testlog.c`), per build, appended per boot, written about once a
+    second off the game's core. Lines: all printf output, `DKU STATE:`, a
+    `PERF` line a second and `HITCH` lines for frames over 20 ms
+    (`port/perf_wiiu.c` explains the fields). Also live over UDP.
+  - **Build number:** `tools/build_number.sh` and `BUILD_NUMBER` (checked in)
+    add one when a Wii U build sees changed sources. "BUILD NNNN" shows bottom
+    left (`port/build_overlay.c`); `BUILD_OVERLAY=0` in `Makefile.wiiu` takes
+    it off when testing ends.

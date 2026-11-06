@@ -61,6 +61,9 @@ static int want_track, gen;   /* a play order for the worker: track (1-based), i
 static uint32_t want_frames;  /* sector-range length in frames; 0: the whole track */
 static bool playing, paused, decoded_all;
 
+/* Frames that played as silence because the decoder fell behind (test log). */
+volatile uint32_t dku_music_dry;
+
 /* On the Wii U, wut's nanosleep in a second thread crashed Cemu (M4);
    OSSleepTicks is the system call underneath it anyway. */
 static void sleep_ms(int ms) {
@@ -112,6 +115,10 @@ static void limit(Limiter *l, const float *in, int16_t *out, unsigned frames, un
 
 static void *worker_main(void *arg) {
     (void)arg;
+#ifdef __WIIU__
+    /* Off core 1, where the game runs, and away from the sound mixer on core 0. */
+    OSSetThreadAffinity(OSGetCurrentThread(), OS_THREAD_ATTRIB_AFFINITY_CPU2);
+#endif
     static drmp3 mp3;
     static float pcm[CHUNK * 2];
     static int16_t out[CHUNK * 2];
@@ -200,6 +207,7 @@ static void music_fn(int32_t *acc, int n, float gain) {
             acc[2 * k] += (int32_t)(l * gain);
             acc[2 * k + 1] += (int32_t)(r * gain);
         }
+        else if(!decoded_all) dku_music_dry++;
         rpos += step;
     }
     pthread_mutex_unlock(&ml);

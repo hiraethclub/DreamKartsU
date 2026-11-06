@@ -28,6 +28,21 @@ struct kthread {
     pthread_t t;
 };
 
+#ifdef __WIIU__
+/* Game threads (the jukebox, saves) stay off core 1, where the game runs. */
+typedef struct {
+    void *(*routine)(void *param);
+    void *param;
+} start_t;
+
+static void *on_core0(void *arg) {
+    start_t s = *(start_t *)arg;
+    free(arg);
+    OSSetThreadAffinity(OSGetCurrentThread(), OS_THREAD_ATTRIB_AFFINITY_CPU0);
+    return s.routine(s.param);
+}
+#endif
+
 kthread_t *thd_create_ex(const kthread_attr_t *attr, void *(*routine)(void *param), void *param) {
     kthread_t *k = calloc(1, sizeof(*k));
     if(!k) return NULL;
@@ -36,7 +51,19 @@ kthread_t *thd_create_ex(const kthread_attr_t *attr, void *(*routine)(void *para
     pthread_attr_t pa;
     pthread_attr_init(&pa);
     pthread_attr_setstacksize(&pa, attr && attr->stack_size ? attr->stack_size : 64 * 1024);
+#ifdef __WIIU__
+    start_t *start = malloc(sizeof(*start));
+    if(!start) {
+        pthread_attr_destroy(&pa);
+        free(k);
+        return NULL;
+    }
+    *start = (start_t){routine, param};
+    int err = pthread_create(&k->t, &pa, on_core0, start);
+    if(err) free(start);
+#else
     int err = pthread_create(&k->t, &pa, routine, param);
+#endif
     pthread_attr_destroy(&pa);
     if(err) {
         free(k);

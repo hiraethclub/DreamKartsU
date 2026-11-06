@@ -8,9 +8,10 @@
      Classic, Nunchuk or a sideways remote), with rumble (below).
    - Sound: audio_ax.c. Music files come from the .wuhb's content folder.
    - Saves live on the SD card in SAVE_DIR.
-   - stdout and stderr go to the log: UDP (udplogserver from wut-tools on
-     the PC) and OSReport (Cemu's log), a line at a time, so the autotest's
-     "DK AUTOTEST" lines reach the PC. */
+   - stdout and stderr go to the log (testlog.c): a file per build next to
+     the app on the SD card, UDP (udplogserver from wut-tools on the PC) and
+     OSReport (Cemu's log), a line at a time, so the autotest's "DK AUTOTEST"
+     lines reach the PC. */
 #include <coreinit/time.h>
 #include <errno.h>
 #include <pthread.h>
@@ -29,10 +30,12 @@
 #include <whb/proc.h>
 
 #include "plat.h"
+#include "testlog.h"
 
 void audio_ax_start(void);
 void audio_ax_stop(void);
 void audio_ax_pause(bool on);
+void gx2_wait_idle(void);
 
 #define SAVE_DIR "fs:/vol/external01/wiiu/apps/DreamKartsU/"
 
@@ -56,7 +59,7 @@ static ssize_t log_write(struct _reent *r, void *fd, const char *ptr, size_t len
         line[line_len++] = ptr[i];
         if(ptr[i] == '\n' || line_len == sizeof(line) - 1) {
             line[line_len] = 0;
-            WHBLogWrite(line);
+            testlog_put(line);
             line_len = 0;
         }
     }
@@ -323,7 +326,11 @@ int plat_keys(int *buf, int max) { return 0; }
 static uint32_t foreground_released(void *arg) {
     (void)arg;
     printf("DKU PROC: foreground released\n");
+    /* Frames overlap the CPU now: let the GPU finish before the system takes
+       the foreground memory it draws into. */
+    gx2_wait_idle();
     audio_ax_pause(true);
+    testlog_pause(true);
     for(int i = 0; i < PLAT_PADS; i++) {
         if(rumble_pow[i] > 0) motor(i, 0);
         rumble_pow[i] = 0;
@@ -333,6 +340,7 @@ static uint32_t foreground_released(void *arg) {
 
 static uint32_t foreground_acquired(void *arg) {
     (void)arg;
+    testlog_pause(false);
     audio_ax_pause(false);
     printf("DKU PROC: foreground back\n");
     return 0;
@@ -351,6 +359,7 @@ void plat_init(void) {
     devoptab_list[STD_ERR] = &log_dev;
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    testlog_start(plat_save_dir());
     KPADInit();
     WPADEnableURCC(TRUE);
     WPADEnableWiiRemote(TRUE);
@@ -375,6 +384,7 @@ void plat_shutdown(void) {
     audio_ax_stop();
     KPADShutdown();
     printf("DKU EXIT: done\n");
+    testlog_stop();
     WHBLogCafeDeinit();
     WHBLogUdpDeinit();
     WHBProcShutdown();

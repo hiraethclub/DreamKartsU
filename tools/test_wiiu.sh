@@ -4,8 +4,8 @@
 # AUTOTEST: PASS" in Cemu with sound (AX played the mix for most of the
 # race, effects audible and, when the .wuhb carries music, a song started
 # and audible); the save check (port/savetest.c) writes its settings on
-# one boot and reads them all back on the next; the release build boots
-# to the title. Exit code is the verdict.
+# one boot and reads them all back on the next; the test log file is
+# complete after a clean exit; the release build boots to the title. Exit code is the verdict.
 #
 #   tools/test_wiiu.sh                 every raceable track
 #   TRACKS="0 7" tools/test_wiiu.sh    some tracks only
@@ -104,11 +104,24 @@ else echo "saves: FAIL (first boot ${st1:-nothing}, second ${st2:-nothing})"; fa
 # shuts down without hanging or crashing. Cemu has no HOME menu, so the
 # menu itself is only tested on the console (TESTING.md).
 out=$LOGDIR/cemu-exit
-VERDICT='DKU EXIT: done' tools/cemu_run.sh build/wiiu-gx2-exittest/DreamKartsU.wuhb 300 "$out" 120 >/dev/null 2>&1
+sd=$LOGDIR/sd-exit
+rm -rf "$sd"
+VERDICT='DKU EXIT: done' CEMU_SD=$sd tools/cemu_run.sh build/wiiu-gx2-exittest/DreamKartsU.wuhb 300 "$out" 120 >/dev/null 2>&1
 if grep -q 'DKU EXIT: done' "$out/log.txt" && ! grep -q 'signal 11' "$out/cemu-stdout.log"; then
     echo "exit: clean shutdown"
 else
     echo "exit: FAIL (log in $out/log.txt)"; fail=1
+fi
+
+# The test log: one file per build next to the app, with the frame timing
+# lines, and everything written by the time the app has gone (testlog.c).
+build_no=$(cut -d' ' -f1 BUILD_NUMBER)
+tlog=$sd/wiiu/apps/DreamKartsU/DreamKartsU-build-$(printf %04d "$build_no").log
+if grep -q "DreamKartsU build $build_no," "$tlog" 2>/dev/null && grep -q '^\[.*PERF ' "$tlog" &&
+    grep -q 'DKU EXIT: done' "$tlog"; then
+    echo "test log: $(basename "$tlog") complete, ends with the exit"
+else
+    echo "test log: FAIL (no complete $tlog)"; fail=1
 fi
 
 # Release: boots, finds the GamePad, reaches the title (frames go by).
