@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <padscore/kpad.h>
 #include <padscore/wpad.h>
+#include <proc_ui/procui.h>
 #include <vpad/input.h>
 #include <whb/log.h>
 #include <whb/log_cafe.h>
@@ -31,6 +32,7 @@
 
 void audio_ax_start(void);
 void audio_ax_stop(void);
+void audio_ax_pause(bool on);
 
 #define SAVE_DIR "fs:/vol/external01/wiiu/apps/DreamKartsU/"
 
@@ -311,11 +313,38 @@ bool plat_keyboard(void) { return false; }
 
 int plat_keys(int *buf, int max) { return 0; }
 
+/* ---- The HOME menu ----
+
+   WHBProcIsRunning blocks the game thread while the app is in the
+   background. These run as the foreground goes and comes back: sound
+   stops (audio_ax.c) and no motor is left buzzing; the game re-sends a
+   held rumble level by itself. */
+
+static uint32_t foreground_released(void *arg) {
+    (void)arg;
+    printf("DKU PROC: foreground released\n");
+    audio_ax_pause(true);
+    for(int i = 0; i < PLAT_PADS; i++) {
+        if(rumble_pow[i] > 0) motor(i, 0);
+        rumble_pow[i] = 0;
+    }
+    return 0;
+}
+
+static uint32_t foreground_acquired(void *arg) {
+    (void)arg;
+    audio_ax_pause(false);
+    printf("DKU PROC: foreground back\n");
+    return 0;
+}
+
 void plat_init(void) {
     static bool done;
     if(done) return;
     done = true;
     WHBProcInit();
+    ProcUIRegisterCallback(PROCUI_CALLBACK_RELEASE, foreground_released, NULL, 100);
+    ProcUIRegisterCallback(PROCUI_CALLBACK_ACQUIRE, foreground_acquired, NULL, 100);
     WHBLogUdpInit();
     WHBLogCafeInit();
     devoptab_list[STD_OUT] = &log_dev;
@@ -329,7 +358,15 @@ void plat_init(void) {
 }
 
 void plat_frame_done(void) {
-    if(running) running = WHBProcIsRunning();
+#ifdef DKU_EXIT_AFTER_FRAMES
+    /* VARIANT=exittest: leave as "Close software" does, for the Cemu check. */
+    static int exit_frames;
+    if(++exit_frames == DKU_EXIT_AFTER_FRAMES) WHBProcStopRunning();
+#endif
+    if(running) {
+        running = WHBProcIsRunning();
+        if(!running) printf("DKU EXIT: leaving the game loop\n");
+    }
 }
 
 /* After the backend's own shutdown (render_gx2.c backend_shutdown). */
@@ -337,6 +374,7 @@ void plat_shutdown(void) {
     for(int i = 0; i < PLAT_PADS; i++) motor(i, 0);
     audio_ax_stop();
     KPADShutdown();
+    printf("DKU EXIT: done\n");
     WHBLogCafeDeinit();
     WHBLogUdpDeinit();
     WHBProcShutdown();

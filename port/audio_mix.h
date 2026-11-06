@@ -17,5 +17,7 @@ void audio_mix(int16_t *out, int n);
 typedef void (*audio_music_fn)(int32_t *acc, int n, float gain);
 void audio_mix_set_music(audio_music_fn fn);
 void audio_mix_music_gain(float gain);
+/* Ends the CD-DA shim's music thread (port/shim/cdda_shim.c). */
+void cdda_shutdown(void);
 
 #endif

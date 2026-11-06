@@ -35,6 +35,7 @@ build() {
 
 build release || fail=1
 build savetest VARIANT=savetest || fail=1
+build exittest VARIANT=exittest || fail=1
 for t in $TRACKS; do build "t$t" VARIANT=autotest DK_AT_TRACK="$t" || fail=1; done
 [ $fail = 0 ] && echo "test_wiiu: builds clean (release and ${TRACKS} autotest)"
 if [ "${CEMU:-1}" = 0 ] || [ $fail != 0 ]; then
@@ -98,6 +99,17 @@ st2=$(VERDICT='DKU SAVETEST: [A-Z]+' CEMU_SD=$sd tools/cemu_run.sh build/wiiu-gx
     "$LOGDIR/cemu-save2" 60 2>/dev/null | grep -oE 'DKU SAVETEST: [A-Z]+' | sed 's/.*: //')
 if [ "$st1" = WROTE ] && [ "$st2" = PASS ]; then echo "saves: written, Cemu restarted, read back"
 else echo "saves: FAIL (first boot ${st1:-nothing}, second ${st2:-nothing})"; fail=1; fi
+
+# Exit: leaves the game as "Close software" does, with music playing, and
+# shuts down without hanging or crashing. Cemu has no HOME menu, so the
+# menu itself is only tested on the console (TESTING.md).
+out=$LOGDIR/cemu-exit
+VERDICT='DKU EXIT: done' tools/cemu_run.sh build/wiiu-gx2-exittest/DreamKartsU.wuhb 300 "$out" 120 >/dev/null 2>&1
+if grep -q 'DKU EXIT: done' "$out/log.txt" && ! grep -q 'signal 11' "$out/cemu-stdout.log"; then
+    echo "exit: clean shutdown"
+else
+    echo "exit: FAIL (log in $out/log.txt)"; fail=1
+fi
 
 # Release: boots, finds the GamePad, reaches the title (frames go by).
 out=$LOGDIR/cemu-release

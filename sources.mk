@@ -17,6 +17,7 @@ VARIANT_FLAGS_autotest := -DDK_AUTOTEST
 VARIANT_FLAGS_capture := -DDK_AUTOTEST -DDK_CAPTURE
 VARIANT_FLAGS_xfcheck := -DDK_AUTOTEST -DDK_XF_CHECK
 VARIANT_FLAGS_savetest :=
+VARIANT_FLAGS_exittest := -DDKU_EXIT_AFTER_FRAMES=1500
 
 # The save check (port/savetest.c): upstream save.c on its own with the
 # shim, under the platform's own init and backend.

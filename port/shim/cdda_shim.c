@@ -48,7 +48,7 @@ _Static_assert(DKU_MUSIC_FILES == DK_MUSIC_TRACKS, "port/music_levels.h is stale
 
 static pthread_mutex_t ml = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t worker;
-static bool worker_on, scanned;
+static bool worker_on, scanned, worker_stop;
 static int ntracks;
 
 /* Under ml. */
@@ -120,6 +120,10 @@ static void *worker_main(void *arg) {
     Limiter lim = {0};
     for(;;) {
         pthread_mutex_lock(&ml);
+        if(worker_stop) {
+            pthread_mutex_unlock(&ml);
+            break;
+        }
         int g = gen, track = want_track;
         uint32_t frames = want_frames;
         uint64_t at = (uint64_t)rpos;   /* past `written` after the ring ran dry */
@@ -170,6 +174,7 @@ static void *worker_main(void *arg) {
         }
         pthread_mutex_unlock(&ml);
     }
+    if(open) drmp3_uninit(&mp3);
     return NULL;
 }
 
@@ -239,6 +244,9 @@ int cdrom_cdda_play(uint32_t start, uint32_t end, uint32_t loops, int mode) {
     }
     else track = (int)start;
     if(track < 1 || track > ntracks) return ntracks ? ERR_SYS : ERR_NO_DISC;
+    /* Before ml: the mixer takes its own lock and then ml (music_fn), so
+       taking them the other way round here could deadlock. */
+    audio_mix_set_music(music_fn);
     pthread_mutex_lock(&ml);
     if(!worker_on) {
         /* minimp3 decodes with a large scratch area on the stack. */
@@ -247,10 +255,9 @@ int cdrom_cdda_play(uint32_t start, uint32_t end, uint32_t loops, int mode) {
         pthread_attr_setstacksize(&attr, 128 * 1024);
         worker_on = pthread_create(&worker, &attr, worker_main, NULL) == 0;
         pthread_attr_destroy(&attr);
-        /* Never joined or detached: it lives as long as the game. */
+        /* Joined by cdda_shutdown. */
     }
     if(worker_on) {
-        audio_mix_set_music(music_fn);
         gen++;
         want_track = track;
         want_frames = frames;
@@ -278,4 +285,20 @@ int cdrom_cdda_resume(void) {
     paused = false;
     pthread_mutex_unlock(&ml);
     return ok ? ERR_OK : ERR_SYS;
+}
+
+/* Stop the music and its thread, file closed, before the game exits: on the
+   Wii U the file lives in the .wuhb, which goes away with the app. */
+void cdda_shutdown(void) {
+    audio_mix_set_music(NULL);
+    pthread_mutex_lock(&ml);
+    bool on = worker_on;
+    worker_stop = true;
+    playing = false;
+    pthread_mutex_unlock(&ml);
+    if(on) pthread_join(worker, NULL);
+    pthread_mutex_lock(&ml);
+    worker_on = false;
+    worker_stop = false;
+    pthread_mutex_unlock(&ml);
 }

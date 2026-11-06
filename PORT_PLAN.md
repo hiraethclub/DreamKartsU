@@ -405,6 +405,7 @@ At tags `m3`, `m5`, `m6`, `m7`:
   asset download at M4. The rule still stands for game builds: no build
   ever connects to dcvmu.com.
 
+- **HOME button (2026-11-06):** retest with the new build; see the log.
 - **Console questions (M4):** does GamePad rumble feel right (pattern
   re-sent every 20 frames, assumed to last at least that long)? Sound on
   the console: crackle or gaps? Sheet: `TESTING.md` m4.
@@ -633,4 +634,14 @@ At tags `m3`, `m5`, `m6`, `m7`:
   - Not tested anywhere but the console: Pro / Classic / Wii Remote input
     and rumble (Cemu here has no such controllers set up). Sheet:
     `TESTING.md` m4.
-
+- 2026-11-06: **First console run: the game loads and runs; pressing
+  HOME got stuck** (Aisling). Cemu has no HOME menu, so this was found by
+  reading the path, and which fix cures it is not yet known. Fixed: the
+  music thread now stops and closes its file before exit (it kept
+  reading the `.wuhb` while the app went away); no `GX2DrawDone` after
+  ProcUI has taken the foreground; sound stops and motors go off while in
+  the background; a lock-order deadlock between `cdrom_cdda_play` and the
+  mixer. `DKU PROC:` and `DKU EXIT:` log lines show how far it gets.
+  `VARIANT=exittest` leaves the game as "Close software" does, and
+  `tools/test_wiiu.sh` now checks it. All checks PASS; **HOME on the
+  console still to be retested.**

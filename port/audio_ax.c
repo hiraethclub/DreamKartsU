@@ -32,7 +32,7 @@
 static AXVoice *voice[2];
 static int16_t *ring[2];
 static pthread_t thread;
-static volatile bool run;
+static volatile bool run, want_pause, parked;
 static bool started;
 
 /* n <= CHUNK frames from the mixer into the rings at sample at. */
@@ -52,6 +52,17 @@ static void fill(uint32_t at, uint32_t n) {
     }
 }
 
+static void voices_state(AXVoiceState state) {
+    AXVoiceBegin(voice[0]);
+    AXVoiceBegin(voice[1]);
+    for(int c = 0; c < 2; c++) {
+        if(state == AX_VOICE_STATE_PLAYING) AXSetVoiceCurrentOffset(voice[c], 0);
+        AXSetVoiceState(voice[c], state);
+    }
+    AXVoiceEnd(voice[1]);
+    AXVoiceEnd(voice[0]);
+}
+
 static void *feeder(void *arg) {
     (void)arg;
     uint32_t wpos = LEAD;
@@ -60,6 +71,25 @@ static void *feeder(void *arg) {
     uint64_t played = 0, report = AUDIO_MIX_RATE;
 #endif
     while(run) {
+        /* In the background (the HOME menu): voices stopped, nothing mixed,
+           so the music decoder soon idles too and touches no files. */
+        if(want_pause) {
+            if(!parked) {
+                voices_state(AX_VOICE_STATE_STOPPED);
+                parked = true;
+            }
+            OSSleepTicks(OSMillisecondsToTicks(10));
+            continue;
+        }
+        if(parked) {
+            for(uint32_t at = 0; at < LEAD; at += CHUNK) fill(at, CHUNK);
+            voices_state(AX_VOICE_STATE_PLAYING);
+            wpos = LEAD;
+#ifdef DK_AUTOTEST
+            last = 0;
+#endif
+            parked = false;
+        }
         AXVoiceOffsets off;
         AXGetVoiceOffsets(voice[0], &off);
         uint32_t play = off.currentOffset % RING;
@@ -147,6 +177,13 @@ void audio_ax_start(void) {
     }
     started = true;
     printf("DKU AX: up, %u Hz, %u ms ahead\n", (unsigned)AXGetInputSamplesPerSec(), LEAD * 1000u / AUDIO_MIX_RATE);
+}
+
+/* From the ProcUI callbacks: waits briefly for the feeder to act. */
+void audio_ax_pause(bool on) {
+    if(!started) return;
+    want_pause = on;
+    for(int i = 0; i < 50 && parked != on; i++) OSSleepTicks(OSMillisecondsToTicks(1));
 }
 
 void audio_ax_stop(void) {

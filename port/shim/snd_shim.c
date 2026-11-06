@@ -127,7 +127,10 @@ int snd_init(void) {
     return 0;
 }
 
-void snd_shutdown(void) { snd_sfx_unload_all(); }
+void snd_shutdown(void) {
+    cdda_shutdown();
+    snd_sfx_unload_all();
+}
 
 size_t snd_mem_available(void) { return 2u << 20; }
 

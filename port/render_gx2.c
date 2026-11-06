@@ -442,8 +442,10 @@ void backend_init(void) {
            (unsigned)loc_tex);
 }
 
+/* Every present ended in GX2DrawDone, and by now ProcUI has taken the
+   foreground away, so a GX2DrawDone here could wait forever. */
 void backend_shutdown(void) {
-    GX2DrawDone();
+    printf("DKU EXIT: graphics\n");
     WHBGfxShutdown();
     plat_shutdown();
 }
