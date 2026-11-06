@@ -405,7 +405,6 @@ At tags `m3`, `m5`, `m6`, `m7`:
   asset download at M4. The rule still stands for game builds: no build
   ever connects to dcvmu.com.
 
-- **HOME button (2026-11-06):** retest with the new build; see the log.
 - **Console questions (M4):** does GamePad rumble feel right (pattern
   re-sent every 20 frames, assumed to last at least that long)? Sound on
   the console: crackle or gaps? Sheet: `TESTING.md` m4.
@@ -643,5 +642,6 @@ At tags `m3`, `m5`, `m6`, `m7`:
   the background; a lock-order deadlock between `cdrom_cdda_play` and the
   mixer. `DKU PROC:` and `DKU EXIT:` log lines show how far it gets.
   `VARIANT=exittest` leaves the game as "Close software" does, and
-  `tools/test_wiiu.sh` now checks it. All checks PASS; **HOME on the
-  console still to be retested.**
+  `tools/test_wiiu.sh` now checks it. All checks PASS.
+- 2026-11-06: **HOME confirmed fixed on the console** (Aisling). The fixes
+  went in together, so which one cured it is not known.
