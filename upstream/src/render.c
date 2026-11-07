@@ -17,6 +17,9 @@
 #include "texture_assets.h"
 #include <malloc.h>
 #include <sh4zam/shz_sh4zam.h>
+#ifdef DKU_NATIVE /* DKU: the GPU transforms, clips and culls (port/render_native.c) */
+#include "render_native.h"
+#endif
 
 #define NEAR_W   R_NEAR_W
 #define MAX_STRIP 512
@@ -633,6 +636,13 @@ static void check_stage(const RV *v, int n, uint32_t codes) {
 /* spec: each vertex's offset (specular) colour, or NULL for none. */
 static inline void strip(const RV *v, const uint32_t *spec, int n) {
     if(n < 3 || n > MAX_STRIP) return;
+#ifdef DKU_NATIVE /* DKU: GPU path */
+    flush_hdr();
+    dku_native_strip(v, spec, n);
+    rstats.tris += n - 2;
+    rstats.verts += n;
+    return;
+#endif
     uint32_t codes = dk_xf_stage(v, n, stage_pv, &xf);
 #ifdef DK_XF_CHECK
     check_stage(v, n, codes);
@@ -750,7 +760,11 @@ void r_strip_bounded(const RV *v, int n, V3 c, float radius) {
     PROF_COUNT(PN_SIN, 1);
     PROF_COUNT(PN_SVERTS, n);
     flush_hdr();
+#ifdef DKU_NATIVE /* DKU: GPU path */
+    dku_native_strip(v, NULL, n);
+#else
     dk_xf_emit(v, n);
+#endif
     rstats.tris += n - 2;
     rstats.verts += n;
     PROF_COUNT(PN_SEMIT, n);
@@ -839,6 +853,13 @@ static void mesh_draw(const RV *v, const KV *kv, const uint32_t *col, int nv, co
                       bool cull) {
     if(nv > MAX_MESH_VERTS) nv = MAX_MESH_VERTS;
     if(nv < 1) return;
+#ifdef DKU_NATIVE /* DKU: GPU path */
+    flush_hdr();
+    dku_native_mesh(v, kv, col, nv, idx, ni, cull);
+    rstats.verts += nv;
+    rstats.tris += ni / 3;
+    return;
+#endif
     PROF_BEGIN(pm);
     /* Only the projected vertex is kept; the rare triangles that need
        near-plane clipping re-transform their corners (XMTRX still holds
@@ -895,6 +916,10 @@ void r_mesh(const RV *v, int nv, const uint16_t *idx, int ni, bool cull) {
 
 void r_mesh_kv(const KMesh *m, const uint32_t *col) {
     if(m->npos > MAX_MESH_VERTS) return;
+#ifdef DKU_NATIVE /* DKU: GPU path; the strips only spared the SH-4 transforms */
+    mesh_draw(NULL, m->v, col, m->nv, m->idx, m->ni, true);
+    return;
+#endif
     PROF_BEGIN(pm);
     uint32_t codes = dk_xf_pos(m->pos, m->npos, stage_pos, &xf);
 #ifdef DK_XF_CHECK

@@ -9,8 +9,19 @@ UP_SOURCES := main.c input.c track.c kart.c render.c world.c models.c fx.c hud.c
 	chat.c perfhud.c flappy.c roam.c world_mesh.c world_road.c world_props.c world_beach.c \
 	world_coral.c world_harbour.c world_temple.c world_skyway.c world_canyon.c world_tsudoken.c \
 	world_apple.c world_lot.c tide.c birds.c autotest.c prof.c
-PORT_SOURCES := port/xform_c.c port/netlink_port.c port/shim/pvr_ta.c port/shim/kos_shim.c \
+PORT_SOURCES := port/xform_c.c port/render_native.c port/netlink_port.c port/shim/pvr_ta.c port/shim/kos_shim.c \
 	port/shim/snd_shim.c port/shim/cdda_shim.c third_party/sh4zam/source/sw/shz_xmtrx_sw.c
+
+# The GPU path for render.c's 3D geometry (port/render_native.c, PORT_PLAN.md
+# principle 4). NATIVE=0 keeps the CPU path the Dreamcast uses, for
+# comparisons (tools/test_native.sh); the xfcheck variant checks that path,
+# so it always has it.
+NATIVE ?= 1
+ifeq ($(VARIANT),xfcheck)
+NATIVE := 0
+endif
+NATIVE_FLAGS := $(if $(filter 1,$(NATIVE)),-DDKU_NATIVE)
+NATIVE_TAG := $(if $(filter 1,$(NATIVE)),,-cpu)
 
 VARIANT_FLAGS_release :=
 VARIANT_FLAGS_autotest := -DDK_AUTOTEST
@@ -29,7 +40,7 @@ endif
 
 # Same language and warnings as upstream; -fsigned-char because SH-4 char
 # is signed and PowerPC char is not (PORT_PLAN.md 1.2).
-COMMON_CFLAGS := -DDKU -std=gnu17 -O2 -ffast-math -fsigned-char -g -Wall -Wextra -Wno-unused-parameter \
+COMMON_CFLAGS := -DDKU $(NATIVE_FLAGS) -std=gnu17 -O2 -ffast-math -fsigned-char -g -Wall -Wextra -Wno-unused-parameter \
 	-Wno-missing-field-initializers -Wno-deprecated-declarations
 COMMON_CPPFLAGS := -iquote port/shim/relroot/a/b/c -Iport/shim -Iport -I$(UP)/src -I$(GEN) \
 	-Ithird_party/sh4zam/include -isystem third_party/dr_libs -MMD -MP

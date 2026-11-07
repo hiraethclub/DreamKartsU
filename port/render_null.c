@@ -20,7 +20,17 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     for(int l = 0; l < TA_LISTS; l++)
         for(int i = 0; i < f->nbatches[l]; i++) {
             const ta_batch_t *b = &f->batches[l][i];
-            if(b->hdr < 0 || b->hdr >= f->nhdrs || b->count % 3 || b->first + b->count > f->nverts) bad++;
+            if(b->hdr < 0 || b->hdr >= f->nhdrs || b->count % 3) bad++;
+            else if(b->mat < 0 && b->first + b->count > f->nverts) bad++;
+            else if(b->mat >= 0) {
+                if(b->mat >= f->nmats || b->first + b->count > f->nidx) bad++;
+                else
+                    for(int k = 0; k < b->count; k++)
+                        if(f->idx[b->first + k] >= (uint32_t)f->nverts) {
+                            bad++;
+                            break;
+                        }
+            }
         }
 }
 

@@ -11,6 +11,12 @@
      (float precision all the way out). Cleared to 0 (infinitely far).
      Writing gl_FragDepth from an interpolated 1/w instead went wrong on
      near-plane-clipped ground (the sea showed through the road).
+   - World batches (ta.h, DKU_NATIVE): the vertex shader transforms them
+     with the batch's matrix (u_world, u_m), clip z is TA_NEAR_W, depth
+     clamp is off so the GPU cuts at upstream's near plane, and the depth
+     range [0, DEPTH_K / TA_NEAR_W] gives them the same window depth,
+     DEPTH_K / w, as screen batches. render.c culls back faces as clockwise
+     on the PVR's screen, y down: clockwise here too, y up.
    - Textures come from texture memory (pvr_shim_block): de-twiddled, with
      the KOS mip chain, cached by address and re-uploaded when
      pvr_txr_load bumps the block's generation.
@@ -46,14 +52,14 @@ void plat_swap(void);
 #define FB_W 640
 #define FB_H 480
 
-static GLuint prog, vao, vbo, fbo, fb_color, fb_depth, white_tex;
+static GLuint prog, vao, vbo, ebo, fbo, fb_color, fb_depth, white_tex;
 static GLuint mod_prog, mod_vao, mod_vbo, dark_prog;
 static size_t mod_vbo_cap;
-static GLint u_tex_on, u_env, u_spec, u_fog_mode, u_use_alpha, u_tex_alpha, u_alpha_ref, u_fog_color,
+static GLint u_world, u_m, u_tex_on, u_env, u_spec, u_fog_mode, u_use_alpha, u_tex_alpha, u_alpha_ref, u_fog_color,
     u_fog_table, u_fog_far, u_tex;
 static unsigned long frame_no;
 static int shots[64], nshots;
-static size_t vbo_cap;
+static size_t vbo_cap, ebo_cap;
 
 /* ---- shaders ---- */
 
@@ -68,12 +74,16 @@ static const char *vs_src =
     "layout(location=1) in vec2 a_uv;\n"
     "layout(location=2) in vec4 a_col;\n"   /* bytes b, g, r, a (ARGB word, little-endian) */
     "layout(location=3) in vec4 a_ofs;\n"
+    "uniform int u_world;\n"
+    "uniform mat4 u_m;\n"
     "out vec2 v_uv;\n"
     "out vec4 v_col, v_ofs;\n"
     "void main() {\n"
-    "    float z = max(a_pos.z, 1e-7);\n"
-    "    float w = 1.0 / z;\n"
-    "    gl_Position = vec4((a_pos.x / 320.0 - 1.0) * w, (1.0 - a_pos.y / 240.0) * w, DEPTH_K, w);\n"
+    "    if(u_world != 0) gl_Position = u_m * vec4(a_pos, 1.0);\n"
+    "    else {\n"
+    "        float w = 1.0 / max(a_pos.z, 1e-7);\n"
+    "        gl_Position = vec4((a_pos.x / 320.0 - 1.0) * w, (1.0 - a_pos.y / 240.0) * w, DEPTH_K, w);\n"
+    "    }\n"
     "    v_uv = a_uv;\n"
     "    v_col = a_col.bgra;\n"
     "    v_ofs = a_ofs.bgra;\n"
@@ -337,12 +347,22 @@ static void apply(const pvr_poly_cxt_t *c, int list, const pvr_shim_state_t *st)
         glStencilFunc(GL_ALWAYS, 0, 0xff);
         glStencilMask(0);
     }
-    /* Screen-space winding; y points down on the PVR and up here. */
-    if(c->gen.culling == PVR_CULLING_CW || c->gen.culling == PVR_CULLING_CCW) {
-        glEnable(GL_CULL_FACE);
-        glCullFace(c->gen.culling == PVR_CULLING_CW ? GL_FRONT : GL_BACK);
+}
+
+/* Screen batches: the header's culling, as M2 set it up (PVR_CULLING_CW
+   drops GL front faces). World batches (ta.h): render.c keeps the faces
+   whose screen area, y down, is positive, which are clockwise in GL's
+   window space, y up, so it drops GL's front (counter-clockwise) faces. */
+static void cull(const ta_batch_t *b, const pvr_poly_cxt_t *c) {
+    int mode = c->gen.culling;
+    bool on = b->mat >= 0 ? b->cull : mode == PVR_CULLING_CW || mode == PVR_CULLING_CCW;
+    if(!on) {
+        glDisable(GL_CULL_FACE);
+        return;
     }
-    else glDisable(GL_CULL_FACE);
+    glEnable(GL_CULL_FACE);
+    glFrontFace(GL_CCW);
+    glCullFace(b->mat >= 0 || mode == PVR_CULLING_CW ? GL_FRONT : GL_BACK);
 }
 
 /* ---- screenshots ---- */
@@ -421,6 +441,8 @@ void backend_init(void) {
     mod_prog = link_prog(mod_vs, null_fs);
     dark_prog = link_prog(blit_vs, null_fs);
 #define U(n) u_##n = glGetUniformLocation(prog, "u_" #n)
+    U(world);
+    U(m);
     U(tex_on);
     U(env);
     U(spec);
@@ -445,6 +467,8 @@ void backend_init(void) {
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(ta_vertex_t), (void *)offsetof(ta_vertex_t, u));
     glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ta_vertex_t), (void *)offsetof(ta_vertex_t, argb));
     glVertexAttribPointer(3, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ta_vertex_t), (void *)offsetof(ta_vertex_t, oargb));
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);   /* part of the VAO */
 
     glGenVertexArrays(1, &mod_vao);
     glBindVertexArray(mod_vao);
@@ -575,6 +599,12 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
         glBufferData(GL_ARRAY_BUFFER, vbo_cap, NULL, GL_STREAM_DRAW);
     }
     glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, f->verts);
+    size_t ibytes = (size_t)f->nidx * sizeof(uint32_t);
+    if(ibytes > ebo_cap) {
+        ebo_cap = ibytes * 2;
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, ebo_cap, NULL, GL_STREAM_DRAW);
+    }
+    if(ibytes) glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, ibytes, f->idx);
     glActiveTexture(GL_TEXTURE0);
     glUniform1i(u_tex, 0);
     glUniform4f(u_fog_color, st->fog_color[1], st->fog_color[2], st->fog_color[3], st->fog_color[0]);
@@ -584,7 +614,8 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     static const int order[TA_LISTS] = {TA_OP, TA_PT, TA_TR};
     for(int li = 0; li < TA_LISTS; li++) {
         int l = order[li];
-        int last_hdr = -1;
+        int last_hdr = -1, last_mat = -1;
+        bool in_world = false;
         if(l == TA_TR) {
             draw_shadows(f, st);
             glUseProgram(prog);
@@ -592,14 +623,33 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
         }
         for(int i = 0; i < f->nbatches[l]; i++) {
             const ta_batch_t *b = &f->batches[l][i];
+            bool world = b->mat >= 0;
             if(b->hdr != last_hdr) {
                 apply(&f->hdrs[b->hdr].cxt, l, st);
                 last_hdr = b->hdr;
             }
+            if(world != in_world) {
+                glUniform1i(u_world, world);
+                if(world) glDisable(GL_DEPTH_CLAMP);
+                else glEnable(GL_DEPTH_CLAMP);
+                glDepthRange(0.0, world ? (1.0 / 128.0) / TA_NEAR_W : 1.0);
+                in_world = world;
+            }
+            if(world && b->mat != last_mat) {
+                glUniformMatrix4fv(u_m, 1, GL_FALSE, f->mats[b->mat].m);
+                last_mat = b->mat;
+            }
+            cull(b, &f->hdrs[b->hdr].cxt);
             /* PVR rows count down from the top; GL's from the bottom. */
             int y0 = b->clip_y0 < 0 ? 0 : b->clip_y0, y1 = b->clip_y1 > FB_H ? FB_H : b->clip_y1;
             glScissor(0, FB_H - y1, FB_W, y1 > y0 ? y1 - y0 : 0);
-            glDrawArrays(GL_TRIANGLES, b->first, b->count);
+            if(world) glDrawElements(GL_TRIANGLES, b->count, GL_UNSIGNED_INT, (void *)((size_t)b->first * sizeof(uint32_t)));
+            else glDrawArrays(GL_TRIANGLES, b->first, b->count);
+        }
+        if(in_world) {
+            glUniform1i(u_world, 0);
+            glEnable(GL_DEPTH_CLAMP);
+            glDepthRange(0.0, 1.0);
         }
     }
     glDisable(GL_SCISSOR_TEST);

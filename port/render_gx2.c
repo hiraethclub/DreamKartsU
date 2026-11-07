@@ -13,6 +13,15 @@
      Cemu 2.6 ignores GX2ClearDepthStencilEx's depth value (it cleared above
      every depth the game draws, so nothing passed GREATER), and a draw
      behaves the same on any implementation.
+   - World batches (ta.h, DKU_NATIVE): main.vert transforms them with the
+     batch's matrix (XformBlock); clip z is TA_NEAR_W, so halfZ clipping
+     cuts at upstream's near plane, and the viewport's depth range
+     [0, DEPTH_K / TA_NEAR_W] gives them the same window depth, DEPTH_K / w,
+     as screen batches. Their triangles are 32-bit indices, written
+     little-endian, the GPU's own order: big-endian ones ran Cemu at 15-30
+     fps (it swaps them per draw), the console never minded.
+     render.c keeps faces clockwise on its y-down screen: those are
+     clockwise here too, so culling drops counter-clockwise (front) faces.
    - Textures: de-twiddled from texture memory to RGBA8, reading the PVR's
      16-bit texels little-endian, with the KOS mip chain; each level goes
      through a linear staging surface and GX2CopySurface does the tiling.
@@ -72,12 +81,14 @@ void plat_shutdown(void);
 #define FB_H 480
 #define MAX_FRAME_VERTS (3 * 131072)
 #define MAX_FRAME_MOD_VERTS (3 * 8192)
+#define MAX_FRAME_IDX (3 * 262144)
 #define UNIFORM_RING (2 * 1024 * 1024)
+#define WORLD_DEPTH_FAR ((1.0f / 128.0f) / TA_NEAR_W)   /* DEPTH_K / TA_NEAR_W */
 
 extern const uint8_t dku_gsh_main[], dku_gsh_blit[], dku_gsh_mod[], dku_gsh_dark[];
 
 static WHBGfxShaderGroup g_main, g_blit, g_mod, g_dark;
-static uint32_t loc_hdr, loc_frame, loc_tex, loc_fb;
+static uint32_t loc_hdr, loc_frame, loc_tex, loc_fb, loc_xform;
 static GX2ContextState *ctx;
 static GX2ColorBuffer cb;
 static GX2DepthBuffer db;
@@ -90,6 +101,7 @@ static float *blit_vbuf;
 typedef struct {
     ta_vertex_t *vbuf;
     ta_mod_vertex_t *mod_vbuf;
+    uint32_t *ibuf;          /* world batches' indices */
     uint8_t *uring;
     size_t uring_used;
     bool uring_full;
@@ -150,6 +162,13 @@ static uint32_t block_location(const GX2PixelShader *ps, const char *name) {
     for(uint32_t i = 0; i < ps->uniformBlockCount; i++)
         if(!strcmp(ps->uniformBlocks[i].name, name)) return ps->uniformBlocks[i].offset;
     fprintf(stderr, "DKU GX2: no uniform block %s\n", name);
+    return 0;
+}
+
+static uint32_t vertex_block_location(const GX2VertexShader *vs, const char *name) {
+    for(uint32_t i = 0; i < vs->uniformBlockCount; i++)
+        if(!strcmp(vs->uniformBlocks[i].name, name)) return vs->uniformBlocks[i].offset;
+    fprintf(stderr, "DKU GX2: no vertex uniform block %s\n", name);
     return 0;
 }
 
@@ -402,14 +421,22 @@ static void apply(const pvr_poly_cxt_t *c, int list, const pvr_shim_state_t *st)
                       c->fmt.modifier ? 0x80 : 0);
     else
         depth_stencil(true, zwrite, cmp, GX2_COMPARE_FUNC_ALWAYS, GX2_STENCIL_FUNCTION_KEEP, 0xff, 0, 0);
-    /* Screen-space winding; y points down on the PVR and up in clip space. */
-    if(c->gen.culling == PVR_CULLING_CW || c->gen.culling == PVR_CULLING_CCW)
+}
+
+/* Screen batches: the header's culling (screen-space winding; y points down
+   on the PVR and up in clip space). World batches: the top of the file. */
+static void cull(const ta_batch_t *b, const pvr_poly_cxt_t *c) {
+    if(b->mat >= 0)
+        GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, b->cull, FALSE);
+    else if(c->gen.culling == PVR_CULLING_CW || c->gen.culling == PVR_CULLING_CCW)
         GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, c->gen.culling == PVR_CULLING_CW, c->gen.culling == PVR_CULLING_CCW);
     else
         GX2SetCullOnlyControl(GX2_FRONT_FACE_CCW, FALSE, FALSE);
 }
 
 /* ---- frame ---- */
+
+static void log_viewport_sums(void);
 
 void backend_init(void) {
     plat_init();
@@ -426,6 +453,7 @@ void backend_init(void) {
     loc_hdr = block_location(g_main.pixelShader, "HdrBlock");
     loc_frame = block_location(g_main.pixelShader, "FrameBlock");
     loc_tex = sampler_location(g_main.pixelShader, "u_tex");
+    loc_xform = vertex_block_location(g_main.vertexShader, "XformBlock");
 
     load_group(&g_blit, dku_gsh_blit, "blit");
     attrib(&g_blit, "a_pos", 0, GX2_ATTRIB_FORMAT_FLOAT_32_32, false);
@@ -487,6 +515,7 @@ void backend_init(void) {
     for(int i = 0; i < FRAME_SETS; i++) {
         sets[i].vbuf = gpu_alloc(GX2_VERTEX_BUFFER_ALIGNMENT, (MAX_FRAME_VERTS + BUILD_OVERLAY_MAX_VERTS) * sizeof(ta_vertex_t));
         sets[i].mod_vbuf = gpu_alloc(GX2_VERTEX_BUFFER_ALIGNMENT, MAX_FRAME_MOD_VERTS * sizeof(ta_mod_vertex_t));
+        sets[i].ibuf = gpu_alloc(GX2_INDEX_BUFFER_ALIGNMENT, MAX_FRAME_IDX * sizeof(uint32_t));
         sets[i].uring = gpu_alloc(GX2_UNIFORM_BLOCK_ALIGNMENT, UNIFORM_RING);
     }
 #ifdef DKU_BUILD_OVERLAY
@@ -497,6 +526,7 @@ void backend_init(void) {
     blit_vbuf = gpu_alloc(GX2_VERTEX_BUFFER_ALIGNMENT, sizeof(quad));
     memcpy(blit_vbuf, quad, sizeof(quad));
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, blit_vbuf, sizeof(quad));
+    log_viewport_sums();
     printf("DKU GX2: up, hdr block %u, frame block %u, tex %u, main thread on core %u\n", (unsigned)loc_hdr,
            (unsigned)loc_frame, (unsigned)loc_tex, (unsigned)OSGetCoreId());
 }
@@ -516,12 +546,42 @@ void backend_shutdown(void) {
     plat_shutdown();
 }
 
+/* The 640x480 frame's viewport with window depth = n + (f - n) * clip z / w.
+   Written as registers: GX2SetViewport works out the depth scale and offset
+   for a -1..1 clip z, (f - n) / 2 and (f + n) / 2, but halfZ clipping makes
+   clip z / w run 0..1, so on the console every depth came out half as wide
+   and 0.5 too far: the depth clear landed at 0.5, world batches below it
+   were all thrown away (build 4, Aisling's photo) and fog saw everything as
+   near. Confirmed by log_viewport_sums on the console 2026-11-07: scale 0.5,
+   offset 0.5 for 0..1. Cemu's GX2SetViewport gives 1 and 0, so it never
+   showed there. */
+static void set_viewport(float n, float f) {
+    GX2ViewportReg r;
+    GX2InitViewportReg(&r, 0, 0, FB_W, FB_H, n, f);
+    union { float f; uint32_t u; } zs = {f - n}, zo = {n}, lo = {n}, hi = {f};
+    r.pa_cl_vport_zscale = zs.u;
+    r.pa_cl_vport_zoffset = zo.u;
+    r.pa_sc_vport_zmin = lo.u;
+    r.pa_sc_vport_zmax = hi.u;
+    GX2SetViewportReg(&r);
+}
+
+/* What this console's GX2 makes of a 0..1 depth range, for the log. */
+static void log_viewport_sums(void) {
+    GX2ViewportReg r;
+    GX2InitViewportReg(&r, 0, 0, FB_W, FB_H, 0.0f, 1.0f);
+    union { uint32_t u; float f; } zs = {r.pa_cl_vport_zscale}, zo = {r.pa_cl_vport_zoffset},
+                                   lo = {r.pa_sc_vport_zmin}, hi = {r.pa_sc_vport_zmax};
+    printf("DKU GX2: GX2InitViewportReg(0..1) gives z scale %g, offset %g, clamp %g..%g; using 1, 0, 0..1\n",
+           (double)zs.f, (double)zo.f, (double)lo.f, (double)hi.f);
+}
+
 static void set_frame_state(void) {
     GX2SetContextState(ctx);
     GX2SetShaderMode(GX2_SHADER_MODE_UNIFORM_BLOCK);
     GX2SetColorBuffer(&cb, GX2_RENDER_TARGET_0);
     GX2SetDepthBuffer(&db);
-    GX2SetViewport(0, 0, FB_W, FB_H, 0.0f, 1.0f);
+    set_viewport(0.0f, 1.0f);
     GX2SetScissor(0, 0, FB_W, FB_H);
     GX2SetRasterizerClipControlEx(TRUE, TRUE, TRUE);
 }
@@ -635,6 +695,17 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     int n = f->nverts < MAX_FRAME_VERTS ? f->nverts : MAX_FRAME_VERTS;
     memcpy(cur->vbuf, f->verts, (size_t)n * sizeof(ta_vertex_t));
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, cur->vbuf, (size_t)n * sizeof(ta_vertex_t));
+    int ni = f->nidx < MAX_FRAME_IDX ? f->nidx : MAX_FRAME_IDX;
+    if(ni) {
+        for(int i = 0; i < ni; i++) cur->ibuf[i] = __builtin_bswap32(f->idx[i]);   /* U32_LE: see the top */
+        GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, cur->ibuf, (size_t)ni * sizeof(uint32_t));
+    }
+    /* Screen batches' XformBlock, and each world matrix's, made when first used. */
+    static const float screen_xform[20];
+    void *screen_block = uniforms(screen_xform, sizeof(screen_xform));
+    static void *mat_block[4096];
+    int nmats = f->nmats < 4096 ? f->nmats : 4096;
+    memset(mat_block, 0, (size_t)nmats * sizeof(void *));
 
     struct {
         float fog_color[4], fog_far[4], fog_table[33 * 4];
@@ -649,33 +720,60 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     void *frame_block = uniforms(&fr, sizeof(fr));
 
     static const int order[TA_LISTS] = {TA_OP, TA_PT, TA_TR};
+    uint32_t tris = 0;
     for(int li = 0; li < TA_LISTS; li++) {
         int l = order[li];
-        int last_hdr = -1;
+        int last_hdr = -1, last_mat = -1;
         if(l == TA_TR) draw_shadows(f, st);
         use_group(&g_main);
         GX2SetPixelUniformBlock(loc_frame, sizeof(fr), frame_block);
+        GX2SetVertexUniformBlock(loc_xform, sizeof(screen_xform), screen_block);
         GX2SetAttribBuffer(0, (uint32_t)n * sizeof(ta_vertex_t), sizeof(ta_vertex_t), cur->vbuf);
         for(int i = 0; i < f->nbatches[l]; i++) {
             const ta_batch_t *b = &f->batches[l][i];
-            if(b->first + b->count > n) break;
+            bool world = b->mat >= 0;
+            if(world ? b->first + b->count > ni || b->mat >= nmats : b->first + b->count > n) continue;
             if(b->hdr != last_hdr) {
                 apply(&f->hdrs[b->hdr].cxt, l, st);
                 last_hdr = b->hdr;
             }
+            if(b->mat != last_mat) {
+                if(world) {
+                    if(!mat_block[b->mat]) {
+                        float x[20];
+                        memcpy(x, f->mats[b->mat].m, 16 * sizeof(float));
+                        x[16] = 1.0f;
+                        x[17] = x[18] = x[19] = 0.0f;
+                        mat_block[b->mat] = uniforms(x, sizeof(x));
+                    }
+                    GX2SetVertexUniformBlock(loc_xform, sizeof(screen_xform), mat_block[b->mat]);
+                }
+                else GX2SetVertexUniformBlock(loc_xform, sizeof(screen_xform), screen_block);
+                if(world != (last_mat >= 0))
+                    set_viewport(0.0f, world ? WORLD_DEPTH_FAR : 1.0f);
+                last_mat = b->mat;
+            }
+            cull(b, &f->hdrs[b->hdr].cxt);
             /* GX2's scissor counts rows down from the top, as the PVR does. */
             int y0 = b->clip_y0 < 0 ? 0 : b->clip_y0, y1 = b->clip_y1 > FB_H ? FB_H : b->clip_y1;
             if(y1 <= y0) continue;
             GX2SetScissor(0, (uint32_t)y0, FB_W, (uint32_t)(y1 - y0));
-            GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, (uint32_t)b->count, (uint32_t)b->first, 1);
+            tris += (uint32_t)b->count / 3;
+            if(world)
+                GX2DrawIndexedEx(GX2_PRIMITIVE_MODE_TRIANGLES, (uint32_t)b->count, GX2_INDEX_TYPE_U32_LE,
+                                 cur->ibuf + b->first, 0, 1);
+            else
+                GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLES, (uint32_t)b->count, (uint32_t)b->first, 1);
         }
+        if(last_mat >= 0) set_viewport(0.0f, 1.0f);
+        GX2SetVertexUniformBlock(loc_xform, sizeof(screen_xform), screen_block);
     }
 #ifdef DKU_BUILD_OVERLAY
     draw_build_overlay(n);
 #endif
     pf.hdrs = (uint32_t)f->nhdrs;
     pf.batches = (uint32_t)(f->nbatches[TA_OP] + f->nbatches[TA_PT] + f->nbatches[TA_TR]);
-    pf.tris = (uint32_t)(n / 3);
+    pf.tris = tris;
     pf.draw = (uint32_t)(plat_time_us() - t_encode);
 }
 
@@ -699,7 +797,56 @@ static void blit_to(uint32_t w, uint32_t h) {
     GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, 0, 1);
 }
 
+#ifdef DK_AUTOTEST
+#include "dku_build.h"
+/* Autotest builds: the frame as a PPM in the app's SD folder at the frames
+   the host's tools/test_host.sh shoots (DKU_SHOTS there), so the console's
+   pictures can be fetched (tools/wiiu.py get) and set beside the host's.
+   Counted as render_gl.c counts: the nth present shows frame n. */
+static void maybe_shot(void) {
+    static const unsigned long frames[] = {300, 1800, 4200, 7200};
+    static unsigned long presents;
+    presents++;
+    bool hit = false;
+    for(size_t i = 0; i < sizeof(frames) / sizeof(frames[0]); i++) hit |= frames[i] == presents;
+    if(!hit) return;
+    GX2Surface s = cb.surface;
+    s.use = GX2_SURFACE_USE_TEXTURE;
+    s.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
+    s.image = s.mipmaps = NULL;
+    GX2CalcSurfaceSizeAndAlignment(&s);
+    uint8_t *px = gpu_alloc_target(s.alignment, s.imageSize);
+    s.image = px;
+    GX2CopySurface(&cb.surface, 0, 0, &s, 0, 0);
+    GX2DrawDone();
+    DCInvalidateRange(px, s.imageSize);
+    char path[256];
+    snprintf(path, sizeof(path), "%sshot-b%04d-f%05lu.ppm", plat_save_dir(), DKU_BUILD_NUMBER, presents);
+    FILE *fp = fopen(path, "wb");
+    if(fp) {
+        static uint8_t row[FB_W * 3];
+        fprintf(fp, "P6\n%d %d\n255\n", FB_W, FB_H);
+        for(int y = 0; y < FB_H; y++) {
+            const uint8_t *src = px + (size_t)y * s.pitch * 4;
+            for(int x = 0; x < FB_W; x++) {
+                row[x * 3] = src[x * 4];
+                row[x * 3 + 1] = src[x * 4 + 1];
+                row[x * 3 + 2] = src[x * 4 + 2];
+            }
+            fwrite(row, sizeof(row), 1, fp);
+        }
+        fclose(fp);
+        printf("DKU SHOT %s\n", path);
+    }
+    free(px);
+    GX2SetContextState(ctx);
+}
+#endif
+
 void backend_present(void) {
+#ifdef DK_AUTOTEST
+    maybe_shot();
+#endif
     uint64_t t_present = plat_time_us();
     GX2Invalidate(GX2_INVALIDATE_MODE_COLOR_BUFFER | GX2_INVALIDATE_MODE_TEXTURE, cb.surface.image,
                   cb.surface.imageSize);

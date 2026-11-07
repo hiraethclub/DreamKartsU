@@ -32,3 +32,4 @@ Every edit is marked `/* DKU: reason */` in the source.
 | --- | --- | --- |
 | `src/prof.h` | `prof_mark()` reads `dku_perf_cycles()` (port/shim/arch/perf.h) under `DKU` instead of the SH-4 counter registers at `0xff100008`/`0xff100010` | A literal hardware address; cannot be shimmed |
 | `src/birds.c` | `flight_pos`: `powf(fmaxf(sinf(a), 0.0f), 0.55f)` | At u = 1, IEEE `sinf(pi)` is about -8.7e-8 and `powf` of it is NaN (a gull drawn with NaN pitch as it lands). The SH-4's FSCA evidently gives >= 0. Worth offering upstream. |
+| `src/render.c` | Under `DKU_NATIVE`: includes `render_native.h`; `strip()`, the whole-strip branch of `r_strip_bounded`, `mesh_draw()` and `r_mesh_kv()` send their vertices untransformed to `port/render_native.c` after `flush_hdr()` and return | PORT_PLAN.md principle 4: the GPU transforms, clips and culls. Hooks only; every decision before them (headers, spheres, viewport) stays upstream's |

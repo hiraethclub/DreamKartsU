@@ -33,7 +33,7 @@ else
 $(error BACKEND must be gx2 or null)
 endif
 
-CFG := wiiu-$(BACKEND)-$(VARIANT)$(if $(DK_AT_TRACK),-t$(DK_AT_TRACK))
+CFG := wiiu-$(BACKEND)-$(VARIANT)$(NATIVE_TAG)$(if $(DK_AT_TRACK),-t$(DK_AT_TRACK))
 OUT := build/$(CFG)
 ELF := $(OUT)/DreamKartsU.elf
 

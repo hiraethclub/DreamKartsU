@@ -174,13 +174,20 @@ void pvr_mod_compile(pvr_mod_hdr_t *dst, pvr_list_t list, uint32_t mode, uint32_
 #define MAX_MOD_VERTS (3 * 8192)
 #define MAX_VOLUMES  1024
 #define MAX_STRIP_VERTS 1024
+#define MAX_IDX      (3 * 262144)
+#define MAX_MATS     4096
 
 static pvr_poly_hdr_t f_hdrs[MAX_HDRS];
 static ta_vertex_t f_verts[MAX_VERTS];
 static ta_batch_t f_batches[TA_LISTS][MAX_BATCHES];
 static ta_mod_vertex_t f_mod_verts[MAX_MOD_VERTS];
 static ta_volume_t f_volumes[MAX_VOLUMES];
+static uint32_t f_idx[MAX_IDX];
+static ta_mat_t f_mats[MAX_MATS];
 static ta_frame_t frame;
+static int world_mat = -1;       /* index into f_mats of the matrix in use */
+static float world_xmtrx[16];    /* what it was made from */
+static uint32_t world_base;      /* the latest ta_world_vertices' first vertex */
 
 static int cur_list = -1;        /* PVR list id */
 static int cur_hdr = -1;         /* index into f_hdrs */
@@ -203,7 +210,10 @@ static void frame_reset(void) {
     frame.verts = f_verts;
     frame.mod_verts = f_mod_verts;
     frame.volumes = f_volumes;
-    frame.nhdrs = frame.nverts = frame.nmod_verts = frame.nvolumes = 0;
+    frame.idx = f_idx;
+    frame.mats = f_mats;
+    frame.nhdrs = frame.nverts = frame.nmod_verts = frame.nvolumes = frame.nidx = frame.nmats = 0;
+    world_mat = -1;
     for(int l = 0; l < TA_LISTS; l++) {
         frame.batches[l] = f_batches[l];
         frame.nbatches[l] = 0;
@@ -224,11 +234,14 @@ static int ta_list(int pvr_list) {
 }
 
 /* The batch new triangles join: the open one if nothing changed. */
-static ta_batch_t *batch_for(int l) {
+/* mat -1 for screen vertices, else a world batch with that matrix and
+   back-face culling. */
+static ta_batch_t *batch_kind(int l, int mat, bool cull) {
     int n = frame.nbatches[l];
     ta_batch_t *b = n ? &frame.batches[l][n - 1] : NULL;
+    int next = mat < 0 ? frame.nverts : frame.nidx;
     if(b && !hdr_pending && b->hdr == cur_hdr && b->clip_y0 == clip_y0 && b->clip_y1 == clip_y1 &&
-       b->first + b->count == frame.nverts)
+       b->mat == mat && b->cull == cull && b->first + b->count == next)
         return b;
     if(n >= MAX_BATCHES) {
         frame.overflow = true;
@@ -236,10 +249,12 @@ static ta_batch_t *batch_for(int l) {
     }
     b = &frame.batches[l][n];
     frame.nbatches[l] = n + 1;
-    *b = (ta_batch_t){cur_hdr, frame.nverts, 0, clip_y0, clip_y1};
+    *b = (ta_batch_t){cur_hdr, next, 0, clip_y0, clip_y1, mat, cull};
     hdr_pending = false;
     return b;
 }
+
+static ta_batch_t *batch_for(int l) { return batch_kind(l, -1, false); }
 
 /* A finished strip as triangles, each kept in the strip's winding. */
 static void flush_strip(void) {
@@ -295,6 +310,60 @@ static void mod_triangle(void) {
         mod_close_next = false;
     }
 }
+
+/* ---- World batches (ta.h) ---- */
+
+
+void ta_world_matrix(const float *x) {
+    flush_strip();
+    if(world_mat >= 0 && !memcmp(x, world_xmtrx, sizeof(world_xmtrx))) return;
+    if(frame.nmats >= MAX_MATS) {
+        frame.overflow = true;
+        world_mat = -1;
+        return;
+    }
+    memcpy(world_xmtrx, x, sizeof(world_xmtrx));
+    /* XMTRX rows: X = screen x * w, Y = screen y * w, row 2 unused, W.
+       Clip: (X / 320 - W, W - Y / 240, TA_NEAR_W, W), as main.vert does
+       for screen vertices. Column c holds row r at [c * 4 + r]. */
+    ta_mat_t *m = &f_mats[frame.nmats];
+    for(int c = 0; c < 4; c++) {
+        float X = x[c * 4 + 0], Y = x[c * 4 + 1], W = x[c * 4 + 3];
+        m->m[c * 4 + 0] = X * (1.0f / 320.0f) - W;
+        m->m[c * 4 + 1] = W - Y * (1.0f / 240.0f);
+        m->m[c * 4 + 2] = c == 3 ? TA_NEAR_W : 0.0f;
+        m->m[c * 4 + 3] = W;
+    }
+    world_mat = frame.nmats++;
+}
+
+ta_vertex_t *ta_world_vertices(int n) {
+    if(world_mat < 0 || ta_list(cur_list) < 0 || cur_hdr < 0) return NULL;
+    if(frame.nverts + n > MAX_VERTS) {
+        frame.overflow = true;
+        return NULL;
+    }
+    world_base = (uint32_t)frame.nverts;
+    frame.nverts += n;
+    return &frame.verts[world_base];
+}
+
+uint32_t *ta_world_indices(int n, bool cull) {
+    int l = ta_list(cur_list);
+    if(world_mat < 0 || l < 0 || cur_hdr < 0) return NULL;
+    if(frame.nidx + n > MAX_IDX) {
+        frame.overflow = true;
+        return NULL;
+    }
+    ta_batch_t *b = batch_kind(l, world_mat, cull);
+    if(!b) return NULL;
+    uint32_t *d = &frame.idx[frame.nidx];
+    frame.nidx += n;
+    b->count += n;
+    return d;
+}
+
+uint32_t ta_world_base(void) { return world_base; }
 
 int pvr_init(const pvr_init_params_t *params) {
     (void)params;
@@ -425,6 +494,7 @@ static void maybe_dump(void) {
     for(int l = 0; l < TA_LISTS; l++)
         for(int i = 0; i < frame.nbatches[l]; i++) {
             const ta_batch_t *b = &frame.batches[l][i];
+            if(b->mat >= 0) continue;   /* screen batches only: world ones need the matrices */
             int32_t rec[6] = {l, b->hdr, b->first, b->count, b->clip_y0, b->clip_y1};
             fwrite(rec, sizeof(rec), 1, fp);
         }
