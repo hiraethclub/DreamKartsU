@@ -104,7 +104,7 @@ What is in this build and what is not yet:
 
 1. Does `DreamKartsU.wuhb` start and reach the title screen (the
    DreamKarts logo over the start line, "PRESS START")?
-2. Does the picture match the PC / Cemu screenshots? Look especially
+2. Does the picture match the PC screenshots? Look especially
    for: wrong colours (red and blue swapped, everything tinted), the
    world missing with only the HUD showing, flickering, black or stretched
    textures, the image upside down.

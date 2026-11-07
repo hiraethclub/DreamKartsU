@@ -324,9 +324,15 @@ are no records to save). Tag `m4`.
       through `r_strip`, so they take this path too; 2D and shadow volumes
       stay screen-space. Check: `tools/test_native.sh` (the CPU path and
       the GPU path draw the same pictures and run the same races);
-  (c) what is left of the per-frame CPU work (copying vertices, upstream's
-      per-chunk culling, the update) spread over the other two cores, and
-      static world geometry kept on the GPU instead of copied each frame.
+  (c) what is left of the per-frame CPU work. Done first, from console
+      timings: frames are built in place in GPU memory (no copy) and
+      textures are uploaded in the PVR's own 16-bit formats (no texel
+      conversion). A race frame is now about 2.7 ms of CPU on core 1, so
+      spreading work over the other cores and keeping static world
+      geometry on the GPU are not needed for one player. They are kept for
+      when two-player split screen or online play (M6) measure over
+      budget, as are the remaining texture uploads (about 18 ms for 21
+      textures at the race intro, once per race).
 
 **Done when:** host autotest passes on all tracks, big-endian autotest
 passes if `test_be.sh` exists, Wii U build compiles. Tag `m5`. Second
@@ -442,10 +448,10 @@ At tags `m3`, `m5`, `m6`, `m7`:
   the network.
 - ~~Console retest (2026-11-06)~~: water, stutter and power-ups all look
   right on build 7 (Aisling, 2026-11-07); races hold 60 fps.
-- **Console questions (M4):** does GamePad rumble feel right (pattern
-  re-sent every 20 frames, assumed to last at least that long)? Sound on
-  the console: crackle or gaps? (Build 7's log shows no underruns and no
-  dry music, but it was played with the sound turned down.) Sheet: `TESTING.md` m4.
+- **Rumble (2026-11-07):** build 7 had none on the GamePad (Aisling). Does
+  the newest build rumble on bumps, jumps and walls? Pro Controller and
+  Wii Remote rumble are still untried. ~~Sound~~: works (Aisling,
+  2026-11-07). Sheet: `TESTING.md` m4.
 - **M3 hardware test (2026-11-04):** the m3 builds are ready to try on
   the console. What to check and where to write results: `TESTING.md`.
 
@@ -776,10 +782,10 @@ At tags `m3`, `m5`, `m6`, `m7`:
     drawn; screenshot checked against the host's.
   - **Console screenshots** (new): autotest builds save PPMs to the SD card
     at the host test's frames, fetched over FTP (`TESTING.md`).
-  - Cemu ran the GPU path at 15-30 fps with big-endian 32-bit indices
-    (three tracks never finished in time) and at 60 fps with little-endian
-    ones (`GX2_INDEX_TYPE_U32_LE`, swapped when copied). The console was fine
-    either way; little-endian it is.
+  - ~~Cemu ran the GPU path at 15-30 fps with big-endian 32-bit indices
+    and at 60 fps with little-endian ones.~~ Wrong (corrected the same
+    day, see the step (c) entry): with little-endian indices Cemu draws no
+    world at all, which is why it was fast. The console draws both kinds.
 - 2026-11-07: **Build 7 on the console: races hold 60 fps** (Aisling played
   a race: "All looked right"). The whole 130 s race at 60 fps with no missed
   frames; track select from high up about 60 fps (was 19-28). World, fog,
@@ -795,3 +801,37 @@ At tags `m3`, `m5`, `m6`, `m7`:
   audio mixed": its log said "no disc", so the run started while the disc
   files were being rebuilt by a parallel build. Three reruns (old and new
   code) passed.
+- 2026-11-07: **Console report on build 7: rumble does not work, sound
+  does** (Aisling). The GamePad plays its motor pattern at 120 Hz, and the
+  port spread a level as single 8 ms bits, too short to spin the motor up.
+  Now solid on from level 2, like the remotes; the console accepts every
+  call (`DKU RUMBLE ... -> 0` in the log). **Not yet felt on the console**
+  (Needs Aisling).
+- 2026-11-07: **Native rendering, step (c): the per-frame CPU work.**
+  Measured on the console with the Emerald Beach autotest (new `copy`,
+  `vert` and `idx` fields in PERF lines), then fixed:
+  - 3.2 ms of the 4.0 ms `draw` was copying 10k vertices and 26k indices
+    into GPU memory. The TA now builds each frame in place in the GPU
+    buffers of the set that draws it (`backend_frame_memory` in ta.h).
+    Indices are stored little-endian on every machine (`ta_idx`). Building
+    in place first moved 2 ms into `game`: the buffers had left the CPU
+    cache, so each first write to a line waited on a read. Claiming the
+    lines with `dcbz` at frame start fixed it. Race frame: game + draw
+    **6.1 to 2.7 ms** (build 12); core 1 idles about 14 of 16.7 ms.
+  - Textures go up in the PVR's own 16-bit formats (GX2 R5G6B5, R4G4B4A4,
+    R5G5B5A1, with red and blue swapped back by the component map), so
+    the CPU only de-twiddles. Title hitch gone (25 ms); race intro, 21
+    textures, 34 to 18 ms. Console screenshots (build 17): colours right.
+  - **Cemu correction:** with little-endian indices Cemu draws no world
+    (karts and track missing, HUD and sky right); with big-endian ones it
+    crashes in Mesa mid-race. Its earlier "60 fps" was drawing nothing.
+    The console draws them correctly (screenshots builds 12 and 17), so
+    Cemu's checks now cover booting, races, sound, saves and exit, not the
+    GPU path's pictures (`tools/test_wiiu.sh` header). Pictures:
+    `tools/test_native.sh` on the PC, console screenshots.
+  - The rest of step (c), other cores and static geometry on the GPU, is
+    not needed at 2.7 ms and waits for split screen or M6 to need it
+    (plan item updated).
+  - Checks, all PASS: `test_native.sh` (8 tracks), `test_host.sh` null and
+    GL (null now fails on any bad batch), `test_be.sh`, `test_saves.sh`,
+    `test_wiiu.sh` (8 tracks), console autotest builds 10, 11, 12, 17.

@@ -13,7 +13,12 @@
 #
 # Cemu runs on a private Xvfb with a private config (tools/cemu_run.sh);
 # screenshots land in captures/wiiu/. Cemu's speed here says nothing about
-# the console's: it renders with Mesa's software rasteriser.
+# the console's: it renders with Mesa's software rasteriser. Nor do its
+# pictures show the GPU path's world (PORT_PLAN.md, log 2026-11-07): Cemu
+# draws no world with the little-endian indices the console draws
+# correctly, so in Cemu this checks booting, the race's rules, sound,
+# saves and exit. tools/test_native.sh and console screenshots check the
+# pictures.
 set -u
 cd "$(dirname "$0")/.."
 TRACKS=${TRACKS:-"0 1 2 3 4 6 7 8"}
