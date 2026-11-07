@@ -17,6 +17,11 @@ milestones and the progress log are in `PORT_PLAN.md`.
   something else.
 - Upstream code: shim first, edit last, mark every edit `/* DKU: */` and
   list it in `UPSTREAM.md`.
+- Play like the Dreamcast, build for the Wii U: keep game rules, simulation
+  and network data as upstream has them (cross-play needs that), but write
+  the hardware side (rendering, audio, threads) the best way for the Wii U,
+  using its GPU and cores, not copies of how the Dreamcast does the work.
+  `PORT_PLAN.md` section 2, principle 4.
 - A milestone is not done until its automated check passes. Do not mark
   work done on the basis of "it compiles" where the plan asks for a test.
 - When blocked by something only the console can answer, write the

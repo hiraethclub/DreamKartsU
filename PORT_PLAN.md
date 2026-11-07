@@ -171,6 +171,18 @@ Principles:
    shares everything except `render_*`, `plat_*` and the audio output.
 3. **Every milestone ends with a green automated check** plus a tagged
    commit Aisling can test on hardware.
+4. **Plays like the Dreamcast, built for the Wii U (Aisling, 2026-11-07).**
+   Game rules, simulation, timing and network data stay as upstream has
+   them: that is what cross-play with real Dreamcasts depends on. The parts
+   that face the hardware (rendering, audio, threading) are written the
+   best way for the Wii U, using its GPU and its three cores, not copies of
+   how the Dreamcast does the work. The first case: Dreamcast games
+   transform, light and clip vertices on the CPU because the PowerVR could
+   not; on the Wii U that moves to vertex shaders. Where this needs upstream
+   edits (mainly `render.c` and `models.c`), keep the game's decisions in
+   upstream and move only the per-vertex work, behind a narrow hook, marked
+   and listed in `UPSTREAM.md` as principle 1 asks. What the player sees
+   must still match: the host's reference images stay the check.
 
 ---
 
@@ -299,6 +311,14 @@ are no records to save). Tag `m4`.
 - Performance: perf HUD ported; target a locked 60 fps in four-kart
   split screen on Tsudoken Drift and Neon Skyway (the heaviest per the
   upstream notes).
+- **Native rendering (added 2026-11-07, principle 4).** Build 2 on the
+  console: races at 30-60 fps, track select about 20, with the CPU's main
+  core the limit and the GPU idle. Steps: (a) time the parts of a frame on
+  the console; (b) world, karts and models send untransformed vertices and
+  matrices, and GX2 vertex shaders do transform, lighting and fog, with the
+  GPU clipping instead of upstream's near-plane code; (c) what is left of
+  the per-frame CPU work spread over the other two cores. The host's GL
+  renderer takes the same path, so the reference-image checks cover it.
 
 **Done when:** host autotest passes on all tracks, big-endian autotest
 passes if `test_be.sh` exists, Wii U build compiles. Tag `m5`. Second
@@ -347,9 +367,11 @@ Aisling has agreed it with Rich.**
 
 At tags `m3`, `m5`, `m6`, `m7`:
 
-1. Copy `build/DreamKartsU.wuhb` to `SD:/wiiu/apps/DreamKartsU/` or send it
-   with wiiload if the Aroma wiiload plugin is set up.
-2. Optional: run `udplogserver` on the PC to watch the console's log.
+1. Claude Code sends the build over the network (`tools/wiiu.py dev`) and
+   records its log; `TESTING.md`, "Working from the PC". Copying the
+   `.wuhb` to `SD:/wiiu/apps/DreamKartsU/` still works as a fallback.
+2. The log needs nothing from Aisling: the live copy lands in `logs/`, and
+   `tools/wiiu.py pull-log` fetches the card's copy.
 3. Play, note problems in `TESTING.md` under the tag's heading: what you
    did, what happened, a phone photo if visual.
 4. Tell Claude Code "results for m3 are in TESTING.md".
@@ -370,6 +392,9 @@ At tags `m3`, `m5`, `m6`, `m7`:
   something else.
 - Upstream code: shim first, edit last, mark every edit `/* DKU: */` and
   list it in `UPSTREAM.md`.
+- Play like the Dreamcast, build for the Wii U: keep game rules, simulation
+  and network data as upstream has them, but write the hardware side the
+  best way for the Wii U (section 2, principle 4).
 - A milestone is not done until its automated check passes. Do not mark
   work done on the basis of "it compiles" where the plan asks for a test.
 - When blocked by something only the console can answer, write the
@@ -706,5 +731,11 @@ At tags `m3`, `m5`, `m6`, `m7`:
     triangle count: about 1.3 us and 0.9 us per triangle, so 13,000
     triangles cost about 30 ms. The swap between 60 and 30 fps as the view
     changes is the stutter.
-  - Next: time the parts inside `game` and `draw`, move the backend's work
-    off core 1, then speed up the hottest loops.
+  - Next: time the parts inside `game` and `draw`, then move the vertex
+    work onto the GPU (see the change below).
+- 2026-11-07: **Plan change: principle 4, native rendering** (Aisling): the
+  port plays like the Dreamcast but is written for the Wii U's hardware,
+  with the game's rules, simulation and network data kept as upstream has
+  them for cross-play. The old approach copied the Dreamcast's split, with
+  vertices worked out on the CPU, which is what holds races under 60 fps.
+  M5 gains a native rendering item.
