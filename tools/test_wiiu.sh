@@ -73,7 +73,7 @@ sound_verdict() {
     [ "${sp:-0}" -gt 1000 ] || { echo "effects silent"; return; }
     if [ -n "$music" ]; then
         grep -qE 'DK AUTOTEST: music: [1-9][0-9]* CD-DA tracks, [1-9][0-9]* songs started, [0-9]+ ended, 0 play' "$1" ||
-            { echo "music did not start"; return; }
+            { grep -q 'DK AUTOTEST:' "$1" && echo "music did not start" || echo "no autotest result (race too slow to finish?)"; return; }
         [ "${mp:-0}" -gt 1000 ] || { echo "music silent"; return; }
     fi
     echo ok
