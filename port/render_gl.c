@@ -434,6 +434,12 @@ static void maybe_shot(void) {
 
 /* ---- backend API ---- */
 
+/* The TA's own arrays: this backend copies them. */
+bool backend_frame_memory(ta_vertex_t **verts, int *max_verts, uint32_t **idx, int *max_idx) {
+    (void)verts, (void)max_verts, (void)idx, (void)max_idx;
+    return false;
+}
+
 void backend_init(void) {
     plat_init();
     prog = link_prog(vs_src, fs_src);

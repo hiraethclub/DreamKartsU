@@ -17,9 +17,11 @@
      batch's matrix (XformBlock); clip z is TA_NEAR_W, so halfZ clipping
      cuts at upstream's near plane, and the viewport's depth range
      [0, DEPTH_K / TA_NEAR_W] gives them the same window depth, DEPTH_K / w,
-     as screen batches. Their triangles are 32-bit indices, written
-     little-endian, the GPU's own order: big-endian ones ran Cemu at 15-30
+     as screen batches. Their triangles are 32-bit indices, stored
+     little-endian by the TA (ta_idx), the GPU's own order: big-endian ones ran Cemu at 15-30
      fps (it swaps them per draw), the console never minded.
+   - The TA builds each frame's vertices and indices in place, in the GPU
+     memory of the frame set that will draw them (backend_frame_memory).
      render.c keeps faces clockwise on its y-down screen: those are
      clockwise here too, so culling drops counter-clockwise (front) faces.
    - Textures: de-twiddled from texture memory to RGBA8, reading the PVR's
@@ -643,7 +645,6 @@ static void draw_build_overlay(int first) {
 /* Wait until this frame's set is free again, and take it. */
 static void begin_set(void) {
     uint64_t t0 = plat_time_us();
-    pf.gpu_late = last_fence && GX2GetRetiredTimeStamp() < last_fence;
     if(cur->fence) GX2WaitTimeStamp(cur->fence);
     for(int i = 0; i < cur->nstaging; i++) free(cur->staging[i]);
     cur->nstaging = 0;
@@ -656,10 +657,46 @@ static void begin_set(void) {
     pf.gpuwait = (uint32_t)(plat_time_us() - t0);
 }
 
+/* The TA builds each frame straight into the GPU memory of the set it will
+   be drawn from, so drawing copies nothing (it used to: 3 ms of a race
+   frame on the console, measured 2026-11-07 at 10k vertices and 26k
+   indices). So the set must be free before the frame begins, not when it
+   is drawn. */
+static bool set_taken;
+static int last_verts, last_idx;   /* the latest frame's counts */
+
+/* Cache lines for about what the TA will write, claimed without reading
+   memory (dcbz). The set's memory left the CPU cache when it was last
+   drawn, so otherwise each first write to a line waits for a read of it:
+   building in place without this moved 2 ms of the copy into the game. */
+static void claim(void *p, int bytes, int max_bytes) {
+    bytes += bytes / 4 + 4096;
+    if(bytes > max_bytes) bytes = max_bytes;
+    DCZeroRange(p, (uint32_t)bytes);
+}
+
+bool backend_frame_memory(ta_vertex_t **verts, int *max_verts, uint32_t **idx, int *max_idx) {
+    if(!set_taken) {
+        begin_set();
+        set_taken = true;
+        claim(cur->vbuf, last_verts * (int)sizeof(ta_vertex_t), MAX_FRAME_VERTS * (int)sizeof(ta_vertex_t));
+        claim(cur->ibuf, last_idx * (int)sizeof(uint32_t), MAX_FRAME_IDX * (int)sizeof(uint32_t));
+    }
+    *verts = cur->vbuf;
+    *max_verts = MAX_FRAME_VERTS;
+    *idx = cur->ibuf;
+    *max_idx = MAX_FRAME_IDX;
+    return true;
+}
+
 void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     t_draw_start = plat_time_us();
     pf.game = t_present_end ? (uint32_t)(t_draw_start - t_present_end) : 0;
-    begin_set();
+    /* Checked here, not when the set is taken just after the last present. */
+    pf.gpu_late = last_fence && GX2GetRetiredTimeStamp() < last_fence;
+    if(!set_taken) begin_set();
+    else if(pf.game > pf.gpuwait) pf.game -= pf.gpuwait;   /* waited in pvr_scene_begin */
+    set_taken = false;
     uint64_t t_encode = plat_time_us();
 
     /* Every texture this frame uses is ready before drawing begins. */
@@ -692,14 +729,20 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
     GX2DrawEx(GX2_PRIMITIVE_MODE_TRIANGLE_STRIP, 4, 0, 1);
     GX2SetTargetChannelMasks(GX2_CHANNEL_MASK_RGBA, 0, 0, 0, 0, 0, 0, 0);
 
+    uint64_t t_copy = plat_time_us();
     int n = f->nverts < MAX_FRAME_VERTS ? f->nverts : MAX_FRAME_VERTS;
-    memcpy(cur->vbuf, f->verts, (size_t)n * sizeof(ta_vertex_t));
-    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, cur->vbuf, (size_t)n * sizeof(ta_vertex_t));
     int ni = f->nidx < MAX_FRAME_IDX ? f->nidx : MAX_FRAME_IDX;
-    if(ni) {
-        for(int i = 0; i < ni; i++) cur->ibuf[i] = __builtin_bswap32(f->idx[i]);   /* U32_LE: see the top */
-        GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, cur->ibuf, (size_t)ni * sizeof(uint32_t));
-    }
+    /* Built in place (backend_frame_memory) unless the frame began before
+       the set was ours: then copy. */
+    if(f->verts != cur->vbuf) memcpy(cur->vbuf, f->verts, (size_t)n * sizeof(ta_vertex_t));
+    if(f->idx != cur->ibuf) memcpy(cur->ibuf, f->idx, (size_t)ni * sizeof(uint32_t));
+    GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, cur->vbuf, (size_t)n * sizeof(ta_vertex_t));
+    if(ni) GX2Invalidate(GX2_INVALIDATE_MODE_CPU_ATTRIBUTE_BUFFER, cur->ibuf, (size_t)ni * sizeof(uint32_t));
+    pf.copy = (uint32_t)(plat_time_us() - t_copy);
+    pf.verts = (uint32_t)n;
+    pf.idx = (uint32_t)ni;
+    last_verts = n;
+    last_idx = ni;
     /* Screen batches' XformBlock, and each world matrix's, made when first used. */
     static const float screen_xform[20];
     void *screen_block = uniforms(screen_xform, sizeof(screen_xform));

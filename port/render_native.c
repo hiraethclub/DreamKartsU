@@ -36,14 +36,14 @@ void dku_native_strip(const RV *v, const uint32_t *spec, int n) {
     for(int k = 0; k < n - 2; k++, ix += 3) {
         uint32_t a = base + (uint32_t)k, b = a + 1, c = a + 2;
         if(k & 1) {
-            ix[0] = b;
-            ix[1] = a;
+            ix[0] = ta_idx(b);
+            ix[1] = ta_idx(a);
         }
         else {
-            ix[0] = a;
-            ix[1] = b;
+            ix[0] = ta_idx(a);
+            ix[1] = ta_idx(b);
         }
-        ix[2] = c;
+        ix[2] = ta_idx(c);
     }
 }
 
@@ -61,5 +61,5 @@ void dku_native_mesh(const RV *v, const KV *kv, const uint32_t *col, int nv, con
     ni -= ni % 3;
     uint32_t *ix = ta_world_indices(ni, cull);
     if(!ix) return;
-    for(int i = 0; i < ni; i++) ix[i] = base + idx[i];
+    for(int i = 0; i < ni; i++) ix[i] = ta_idx(base + idx[i]);
 }

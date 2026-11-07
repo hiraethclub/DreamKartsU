@@ -9,11 +9,12 @@ typedef struct {
     uint32_t game;       /* game update and building the frame: CPU */
     uint32_t gpuwait;    /* waiting for the GPU to free this frame's buffers */
     uint32_t draw;       /* writing GPU commands */
+    uint32_t copy;       /* part of draw: vertices and indices into GPU memory */
     uint32_t present;    /* blit commands, swap, flush */
     uint32_t flipwait;   /* waiting for the display (idle time when on target) */
     uint32_t upload_us;  /* the textures converted this frame */
     uint32_t uploads;
-    uint32_t hdrs, batches, tris;
+    uint32_t hdrs, batches, tris, verts, idx;
     uint32_t gpu_late;   /* 1: the last frame's GPU work had not ended by now */
 } perf_frame_t;
 

@@ -44,7 +44,7 @@ static const char *fmt(char *out, const Stat *s, uint32_t n) {
 }
 
 void perf_frame(const perf_frame_t *p) {
-    static Stat frame, gamet, gpuwait, draw, present, flipwait;
+    static Stat frame, gamet, gpuwait, draw, copy, present, flipwait;
     static uint32_t n, miss, late, uploads, upload_us, hitches, state = 0xffffffffu;
     static uint64_t window;
     int s = &game ? game.state : -1;
@@ -56,6 +56,7 @@ void perf_frame(const perf_frame_t *p) {
     add(&gamet, p->game);
     add(&gpuwait, p->gpuwait);
     add(&draw, p->draw);
+    add(&copy, p->copy);
     add(&present, p->present);
     add(&flipwait, p->flipwait);
     n++;
@@ -72,15 +73,15 @@ void perf_frame(const perf_frame_t *p) {
                (unsigned)p->gpu_late, (unsigned)p->tris);
     }
     if(window < 1000000) return;
-    char a[24], b[24], c[24], d[24], e[24], f[24];
+    char a[24], b[24], c[24], d[24], e[24], f[24], g[24];
     uint32_t tenths = (uint32_t)((uint64_t)n * 10000000u / window);
-    printf("PERF %s fps=%u.%u miss=%u frame=%s game=%s gpuwait=%s draw=%s present=%s flipwait=%s gpulate=%u "
-           "up=%u/%ums hdr=%u batch=%u tri=%u axunder=%u musicdry=%u\n",
+    printf("PERF %s fps=%u.%u miss=%u frame=%s game=%s gpuwait=%s draw=%s copy=%s present=%s flipwait=%s gpulate=%u "
+           "up=%u/%ums hdr=%u batch=%u tri=%u vert=%u idx=%u axunder=%u musicdry=%u\n",
            state_name(s), (unsigned)(tenths / 10), (unsigned)(tenths % 10), (unsigned)miss, fmt(a, &frame, n),
-           fmt(b, &gamet, n), fmt(c, &gpuwait, n), fmt(d, &draw, n), fmt(e, &present, n), fmt(f, &flipwait, n),
+           fmt(b, &gamet, n), fmt(c, &gpuwait, n), fmt(d, &draw, n), fmt(g, &copy, n), fmt(e, &present, n), fmt(f, &flipwait, n),
            (unsigned)late, (unsigned)uploads, (unsigned)(upload_us / 1000), (unsigned)p->hdrs, (unsigned)p->batches,
-           (unsigned)p->tris, (unsigned)dku_ax_underruns, (unsigned)dku_music_dry);
-    frame = gamet = gpuwait = draw = present = flipwait = (Stat){0, 0};
+           (unsigned)p->tris, (unsigned)p->verts, (unsigned)p->idx, (unsigned)dku_ax_underruns, (unsigned)dku_music_dry);
+    frame = gamet = gpuwait = draw = copy = present = flipwait = (Stat){0, 0};
     n = miss = late = uploads = upload_us = hitches = 0;
     window = 0;
 }

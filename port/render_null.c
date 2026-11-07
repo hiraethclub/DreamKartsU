@@ -8,6 +8,12 @@
 
 static unsigned long frames, bad;
 
+/* The TA's own arrays: this backend copies them. */
+bool backend_frame_memory(ta_vertex_t **verts, int *max_verts, uint32_t **idx, int *max_idx) {
+    (void)verts, (void)max_verts, (void)idx, (void)max_idx;
+    return false;
+}
+
 void backend_init(void) { plat_init(); }
 
 void backend_shutdown(void) {
@@ -26,7 +32,7 @@ void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st) {
                 if(b->mat >= f->nmats || b->first + b->count > f->nidx) bad++;
                 else
                     for(int k = 0; k < b->count; k++)
-                        if(f->idx[b->first + k] >= (uint32_t)f->nverts) {
+                        if(ta_idx(f->idx[b->first + k]) >= (uint32_t)f->nverts) {
                             bad++;
                             break;
                         }

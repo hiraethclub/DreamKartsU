@@ -188,6 +188,7 @@ static ta_frame_t frame;
 static int world_mat = -1;       /* index into f_mats of the matrix in use */
 static float world_xmtrx[16];    /* what it was made from */
 static uint32_t world_base;      /* the latest ta_world_vertices' first vertex */
+static int max_verts = MAX_VERTS, max_idx = MAX_IDX;   /* of the arrays in use */
 
 static int cur_list = -1;        /* PVR list id */
 static int cur_hdr = -1;         /* index into f_hdrs */
@@ -205,12 +206,16 @@ static pvr_stats_t stats;
 static uint64_t frame_start_us;
 uint64_t timer_us_gettime64(void);
 
-static void frame_reset(void) {
+/* backend: ask the backend where this frame's vertices and indices go. */
+static void frame_reset(bool backend) {
     frame.hdrs = f_hdrs;
     frame.verts = f_verts;
+    frame.idx = f_idx;
+    max_verts = MAX_VERTS;
+    max_idx = MAX_IDX;
+    if(backend) backend_frame_memory(&frame.verts, &max_verts, &frame.idx, &max_idx);
     frame.mod_verts = f_mod_verts;
     frame.volumes = f_volumes;
-    frame.idx = f_idx;
     frame.mats = f_mats;
     frame.nhdrs = frame.nverts = frame.nmod_verts = frame.nvolumes = frame.nidx = frame.nmats = 0;
     world_mat = -1;
@@ -264,7 +269,7 @@ static void flush_strip(void) {
         return;
     }
     int ntri = strip_n - 2;
-    if(frame.nverts + ntri * 3 > MAX_VERTS) {
+    if(frame.nverts + ntri * 3 > max_verts) {
         frame.overflow = true;
         strip_n = 0;
         return;
@@ -339,7 +344,7 @@ void ta_world_matrix(const float *x) {
 
 ta_vertex_t *ta_world_vertices(int n) {
     if(world_mat < 0 || ta_list(cur_list) < 0 || cur_hdr < 0) return NULL;
-    if(frame.nverts + n > MAX_VERTS) {
+    if(frame.nverts + n > max_verts) {
         frame.overflow = true;
         return NULL;
     }
@@ -351,7 +356,7 @@ ta_vertex_t *ta_world_vertices(int n) {
 uint32_t *ta_world_indices(int n, bool cull) {
     int l = ta_list(cur_list);
     if(world_mat < 0 || l < 0 || cur_hdr < 0) return NULL;
-    if(frame.nidx + n > MAX_IDX) {
+    if(frame.nidx + n > max_idx) {
         frame.overflow = true;
         return NULL;
     }
@@ -367,7 +372,7 @@ uint32_t ta_world_base(void) { return world_base; }
 
 int pvr_init(const pvr_init_params_t *params) {
     (void)params;
-    frame_reset();
+    frame_reset(false);
     backend_init();
     return 0;
 }
@@ -380,7 +385,7 @@ int pvr_shutdown(void) {
 }
 
 int pvr_scene_begin(void) {
-    frame_reset();
+    frame_reset(true);
     frame_start_us = timer_us_gettime64();
     return 0;
 }

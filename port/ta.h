@@ -72,7 +72,8 @@ typedef struct {
     int nmod_verts;
     ta_volume_t *volumes;
     int nvolumes;
-    uint32_t *idx;      /* world batches' triangles: indices into verts */
+    uint32_t *idx;      /* world batches' triangles: indices into verts,
+                           stored little-endian (ta_idx) */
     int nidx;
     ta_mat_t *mats;
     int nmats;
@@ -86,6 +87,15 @@ typedef struct {
    so). Indices are into the whole vertex array: add ta_world_base(), the
    latest ta_world_vertices' first vertex. */
 void ta_world_matrix(const float *xmtrx);
+/* An index as the frame stores it, and back: little-endian on every
+   machine, which is what the Wii U's GPU reads fastest (render_gx2.c). */
+static inline uint32_t ta_idx(uint32_t i) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    return __builtin_bswap32(i);
+#else
+    return i;
+#endif
+}
 ta_vertex_t *ta_world_vertices(int n);
 uint32_t ta_world_base(void);
 uint32_t *ta_world_indices(int n, bool cull);
@@ -93,6 +103,12 @@ uint32_t *ta_world_indices(int n, bool cull);
 /* The backend a build links in. */
 void backend_init(void);
 void backend_shutdown(void);
+/* Where the next frame's vertices and indices go (called from
+   pvr_scene_begin). A backend that draws them where they are returns its
+   own GPU memory, with room for *max_verts and *max_idx, and must not hand
+   it out while the GPU may still read it; false keeps the TA's own arrays,
+   which the backend then copies. */
+bool backend_frame_memory(ta_vertex_t **verts, int *max_verts, uint32_t **idx, int *max_idx);
 /* Draw a finished frame (called from pvr_scene_finish). */
 void backend_draw(const ta_frame_t *f, const pvr_shim_state_t *st);
 /* Show it, pump the platform's events and wait for the next refresh

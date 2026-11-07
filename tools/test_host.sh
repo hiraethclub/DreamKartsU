@@ -116,6 +116,9 @@ for t in $TRACKS; do
     fi
     snd=$(sound_verdict "$log")
     if [ "$snd" != ok ]; then verdict="FAIL ($snd)"; fail=1; fi
+    # The null backend checks every batch it is given (port/render_null.c).
+    nbad=$(sed -n 's/.*frames, \([0-9]*\) bad batches.*/\1/p' "$log")
+    if [ "${nbad:-0}" != 0 ]; then verdict="FAIL ($nbad bad batches)"; fail=1; fi
     xf=$(grep 'DK XFCHECK' "$log" | tail -1 || true)
     if [ -n "$xf" ] && ! echo "$xf" | grep -q 'mismatch=0'; then
         case " $XF_KNOWN " in
