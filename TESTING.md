@@ -47,6 +47,13 @@ the router saves doing this again.
 Sending works from the Wii U Menu or a running game. If the live log stays
 empty while the game runs, check that the PC's firewall allows UDP port 4405.
 
+**If a send fails with "Connection timed out"**, the Wiiload plugin is stuck.
+It handles one connection at a time with no timeout, so a connection that
+opens and sends nothing (a port scanner, or a send cut off part way) jams it.
+Open and close any app on the console, or go HOME and back to the menu, and it
+starts afresh. `tools/wiiu.py` never makes such connections: `find` and
+`status` use FTPiiU.
+
 `tools/test_console_tool.py` checks the tool against stand-ins on this PC.
 
 ## Every test build: number and log

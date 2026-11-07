@@ -405,9 +405,9 @@ At tags `m3`, `m5`, `m6`, `m7`:
   asset download at M4. The rule still stands for game builds: no build
   ever connects to dcvmu.com.
 
-- **Network setup (2026-11-07):** enable the Wiiload and FTPiiU plugins, then
-  run `tools/wiiu.py find` and `status`. Steps: `TESTING.md`, "Working from the
-  PC".
+- ~~Network setup~~: plugins copied to the card and enabled 2026-11-07; the
+  console is found and FTP works. **Now:** open and close any app on the
+  console (or HOME and back) to free the jammed Wiiload, then say so.
 - **Console retest (2026-11-06):** does the newest build (number bottom left)
   cure the water, the stutter and the power-up glitches? Send
   `DreamKartsU-build-NNNN.log` from the SD card's app folder, and a photo of
@@ -683,3 +683,13 @@ At tags `m3`, `m5`, `m6`, `m7`:
   Wiiload, reaches the card with FTPiiU and follows the UDP log.
   `tools/test_console_tool.py` PASS against local stand-ins, including the
   real `wiiload` tool. Not yet tried against the console's plugins.
+- 2026-11-07: **First contact with the console.** Copied the Wiiload and
+  FTPiiU plugins (from Aisling's Aroma package downloads) to the card.
+  `find` and `status` reached the console, then the first send timed out.
+  Cause, from the plugin's source (wiiload_plugin `TcpReceiver.cpp`,
+  `net.cpp`): one client at a time, backlog 1, and `recvwait` loops forever
+  when a client leaves without sending. The tool's own connect-and-close
+  port checks on 4299 did that. Fixed: `find` and `status` use FTPiiU (its
+  greeting is "220 Hello!"), no test connections to 4299, and
+  `test_console_tool.py` fails on any empty connection to its Wiiload
+  stand-in. PASS. The jammed plugin clears when the console switches app.

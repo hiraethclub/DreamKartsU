@@ -98,12 +98,18 @@ class Server(socketserver.ThreadingTCPServer):
 
 
 received = bytearray()
+empty_connections = 0
 
 
 class Wiiload(socketserver.StreamRequestHandler):
+    """The real plugin jams on a connection that sends nothing; count them."""
     def handle(self):
+        global empty_connections
+        got = 0
         while chunk := self.request.recv(65536):
             received.extend(chunk)
+            got += len(chunk)
+        empty_connections += not got
 
 
 fails = 0
@@ -138,7 +144,7 @@ try:
     check("install leaves no partial file", not list(sd.rglob("*.part")))
 
     r = tool("status")
-    check("status sees both services and the app", r.returncode == 0 and "DreamKartsU.wuhb" in r.stdout, r.stdout + r.stderr)
+    check("status sees FTP and the app", r.returncode == 0 and "DreamKartsU.wuhb" in r.stdout, r.stdout + r.stderr)
 
     number = int((ROOT / "BUILD_NUMBER").read_text().split()[0])
     name = f"DreamKartsU-build-{number:04d}.log"
@@ -152,6 +158,8 @@ try:
     time.sleep(0.5)
     check("run sends with the real wiiload tool", r.returncode == 0 and received[:4] == b"HAXX" and len(received) > 1000,
           r.stderr or bytes(received[:16]))
+
+    check("nothing opened an empty connection to Wiiload", empty_connections == 0, f"{empty_connections} of them")
 
     def send_log():
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

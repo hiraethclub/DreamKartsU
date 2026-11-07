@@ -17,6 +17,11 @@ app, TCP 4299), FTPiiU (the SD card, port 21) and the game's own UDP log
   tools/wiiu.py get PATH [DEST]      copy a file from the card
   tools/wiiu.py put FILE PATH        copy a file to the card
 
+Nothing here ever opens a test connection to Wiiload's port: the plugin
+serves one client at a time with no timeout, and a client that connects and
+leaves without sending jams it until the console switches app (seen on the
+console, 2026-11-07). Finding and checking go through FTPiiU instead.
+
 Paths are relative to the SD card's root. The address comes from WIIU_IP or
 the git-ignored file .wiiu-console. Only ever talks to that address.
 """
@@ -59,11 +64,24 @@ def console_ip(required=True):
 
 
 def port_open(ip, port, timeout=1.0):
+    """Never use on WIILOAD_PORT (see the top of this file)."""
+    assert port != WIILOAD_PORT
     try:
         with socket.create_connection((ip, port), timeout=timeout):
             return True
     except OSError:
         return False
+
+
+def ftp_greeting(ip, timeout=1.0):
+    """The FTP server's first line, or None."""
+    try:
+        with socket.create_connection((ip, FTP_PORT), timeout=timeout) as s:
+            s.settimeout(timeout)
+            line = s.recv(256).decode("latin-1").strip().splitlines()
+            return line[0] if line and line[0].startswith("220") else None
+    except OSError:
+        return None
 
 
 # ---- finding the console ----
@@ -81,13 +99,15 @@ def local_network():
 
 def cmd_find(args):
     net = local_network()
-    print(f"looking for Wiiload (port {WIILOAD_PORT}) on {net} ...")
+    print(f"looking for FTPiiU (port {FTP_PORT}) on {net} ...")
     hosts = [str(h) for h in net.hosts()]
     with concurrent.futures.ThreadPoolExecutor(64) as pool:
-        hits = [h for h, ok in zip(hosts, pool.map(lambda h: port_open(h, WIILOAD_PORT, 0.5), hosts)) if ok]
-    if not hits:
-        die("nothing found. Is the console on, at the Wii U Menu or in a game, with the Wiiload plugin enabled?")
-    print("found:", ", ".join(hits))
+        found = [(h, g) for h, g in zip(hosts, pool.map(lambda h: ftp_greeting(h, 1.0), hosts)) if g]
+    if not found:
+        die("nothing found. Is the console on, at the Wii U Menu or in a game, with the FTPiiU plugin enabled?")
+    for h, g in found:
+        print(f"found: {h}  ({g})")
+    hits = [h for h, _ in found]
     if len(hits) == 1:
         CONFIG.write_text(hits[0] + "\n")
         print(f"saved {hits[0]} in {CONFIG.name}")
@@ -103,15 +123,15 @@ def cmd_set_ip(args):
 
 def cmd_status(args):
     ip = console_ip()
-    wl, ftp = port_open(ip, WIILOAD_PORT), port_open(ip, FTP_PORT)
+    ftp = port_open(ip, FTP_PORT)
     print(f"console {ip}")
-    print(f"  Wiiload (send and start apps): {'ok' if wl else 'NOT reachable: is the Wiiload plugin on?'}")
     print(f"  FTPiiU (SD card):              {'ok' if ftp else 'NOT reachable: is the FTPiiU plugin on?'}")
+    print("  Wiiload (send and start apps): not checked (a test connection would jam it); run or dev will tell")
     if ftp:
         with ftp_connect(ip) as f:
             names = sd_names(f, APP_DIR)
         print(f"  {APP_DIR}: {', '.join(sorted(names)) or 'empty'}")
-    if not (wl and ftp):
+    if not ftp:
         sys.exit(1)
 
 
@@ -295,14 +315,13 @@ def wiiload(ip, file):
     file = Path(file)
     if not file.is_file():
         die(f"no such file: {file}")
-    if not port_open(ip, WIILOAD_PORT, 3):
-        die(f"nothing answers on {ip}:{WIILOAD_PORT}: is the console on, with the Wiiload plugin enabled?")
     env = dict(os.environ, WIILOAD=f"tcp:{ip}")
     t0 = time.monotonic()
     tool = os.environ.get("WIILOAD_TOOL", f"{DEVKITPRO}/tools/bin/wiiload")
     done = subprocess.run([tool, str(file)], env=env, stdout=subprocess.DEVNULL)
     if done.returncode:
-        die("wiiload failed")
+        die(f"wiiload failed. Is the Wiiload plugin on? If it was working and a send broke off, it can be stuck: "
+            f"on the console open and close any app (or go HOME and back to the menu), then try again")
     print(f"sent {file.name} ({file.stat().st_size / 1e6:.1f} MB) in {time.monotonic() - t0:.1f} s")
 
 
