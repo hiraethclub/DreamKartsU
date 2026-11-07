@@ -313,12 +313,20 @@ are no records to save). Tag `m4`.
   upstream notes).
 - **Native rendering (added 2026-11-07, principle 4).** Build 2 on the
   console: races at 30-60 fps, track select about 20, with the CPU's main
-  core the limit and the GPU idle. Steps: (a) time the parts of a frame on
-  the console; (b) world, karts and models send untransformed vertices and
-  matrices, and GX2 vertex shaders do transform, lighting and fog, with the
-  GPU clipping instead of upstream's near-plane code; (c) what is left of
-  the per-frame CPU work spread over the other two cores. The host's GL
-  renderer takes the same path, so the reference-image checks cover it.
+  core the limit and the GPU idle. Steps:
+  (a) time the parts of a frame on the console: done, the autotest's own
+      profiler (`DK PC` lines) over the network;
+  (b) render.c's strips and meshes go to the GPU untransformed with their
+      matrix (`port/render_native.c`, ta.h world batches); the vertex shader
+      transforms, the GPU clips at upstream's near plane and culls back
+      faces. Kart lighting stays on the CPU (it is per colour group, not
+      per vertex) and fog was already per pixel. Billboards and streaks go
+      through `r_strip`, so they take this path too; 2D and shadow volumes
+      stay screen-space. Check: `tools/test_native.sh` (the CPU path and
+      the GPU path draw the same pictures and run the same races);
+  (c) what is left of the per-frame CPU work (copying vertices, upstream's
+      per-chunk culling, the update) spread over the other two cores, and
+      static world geometry kept on the GPU instead of copied each frame.
 
 **Done when:** host autotest passes on all tracks, big-endian autotest
 passes if `test_be.sh` exists, Wii U build compiles. Tag `m5`. Second
@@ -432,13 +440,12 @@ At tags `m3`, `m5`, `m6`, `m7`:
 
 - ~~Network setup~~: done 2026-11-07; build 2 sent, run and logged over
   the network.
-- **Console retest (2026-11-06):** does the newest build (number bottom left)
-  cure the water, the stutter and the power-up glitches? Send
-  `DreamKartsU-build-NNNN.log` from the SD card's app folder, and a photo of
-  any power-up glitch left. Sheet: `TESTING.md`.
+- ~~Console retest (2026-11-06)~~: water, stutter and power-ups all look
+  right on build 7 (Aisling, 2026-11-07); races hold 60 fps.
 - **Console questions (M4):** does GamePad rumble feel right (pattern
   re-sent every 20 frames, assumed to last at least that long)? Sound on
-  the console: crackle or gaps? Sheet: `TESTING.md` m4.
+  the console: crackle or gaps? (Build 7's log shows no underruns and no
+  dry music, but it was played with the sound turned down.) Sheet: `TESTING.md` m4.
 - **M3 hardware test (2026-11-04):** the m3 builds are ready to try on
   the console. What to check and where to write results: `TESTING.md`.
 
@@ -739,3 +746,52 @@ At tags `m3`, `m5`, `m6`, `m7`:
   them for cross-play. The old approach copied the Dreamcast's split, with
   vertices worked out on the CPU, which is what holds races under 60 fps.
   M5 gains a native rendering item.
+- 2026-11-07: **Native rendering, step (b): render.c's 3D geometry on the
+  GPU.** `port/render_native.c` takes strips and meshes from hooks in
+  render.c (`DKU_NATIVE`, listed in UPSTREAM.md) with the XMTRX matrix;
+  ta.h world batches carry them (indexed, a matrix each); main.vert / the GL
+  vertex shader transform; clip z = 0.25 with halfZ clipping cuts at
+  upstream's near plane; a depth range of [0, DEPTH_K / 0.25] keeps window
+  depth = DEPTH_K / w, so fog and the screen-space path are unchanged.
+  Checks:
+  - `tools/test_native.sh` (new): GL host autotest with NATIVE=0 and =1 on
+    all eight tracks: identical race results, and all 32 pictures match
+    under `tools/compare_shots.py` (differences may be lines, not areas;
+    a painted 12 px square must fail, and does). The one place they differ
+    is Neon Skyway's gate halos, drawn in the same plane as the bands under
+    them, where rounding picks the winner (stripy on the CPU path, solid on
+    the GPU's).
+  - Console autotest, Emerald Beach, before and after: game time in races
+    5.5 to 2.1 ms a frame, draw 3.9 to 3.4, CPU average 9.7 to 5.7 ms and
+    worst 18.4 to 12.0 ms. PASS.
+  - **Found on the console, not in Cemu:** build 4 drew no world (Aisling's
+    photo). The console's `GX2SetViewport` makes the depth scale and offset
+    for a -1..1 clip z (0.5 and 0.5 for 0..1, logged on the console), but
+    halfZ clipping gives 0..1. So depth has always been 0.5 + 0.5 x what was
+    meant on the console: the depth clear landed at 0.5 and the world's new
+    smaller depth range fell below it. It also means **fog has never shown
+    on the console** (fog read every pixel as near). Cemu's version gives 1
+    and 0. Fixed by writing the viewport registers directly
+    (`set_viewport`). Build 6 on the console: world, karts and distance fog
+    drawn; screenshot checked against the host's.
+  - **Console screenshots** (new): autotest builds save PPMs to the SD card
+    at the host test's frames, fetched over FTP (`TESTING.md`).
+  - Cemu ran the GPU path at 15-30 fps with big-endian 32-bit indices
+    (three tracks never finished in time) and at 60 fps with little-endian
+    ones (`GX2_INDEX_TYPE_U32_LE`, swapped when copied). The console was fine
+    either way; little-endian it is.
+- 2026-11-07: **Build 7 on the console: races hold 60 fps** (Aisling played
+  a race: "All looked right"). The whole 130 s race at 60 fps with no missed
+  frames; track select from high up about 60 fps (was 19-28). World, fog,
+  water from up high and power-ups look right, which answers the
+  2026-11-06 retest. Sound: no underruns and no dry music in the log, but
+  it was played with the sound turned down, so the sound question stays
+  open. Left: one-off load hitches at the title and track select, and
+  results-screen frames of about 23 ms at 15k triangles (step c).
+  Checks, all PASS: `tools/test_native.sh` (8 tracks, 32 pictures),
+  `tools/test_host.sh` GL and null-xfcheck, `tools/test_be.sh`,
+  `tools/test_saves.sh`, `tools/test_wiiu.sh` (all 8 tracks in Cemu, saves,
+  exit, test log, release). One null-xfcheck run failed track 7 with "no
+  audio mixed": its log said "no disc", so the run started while the disc
+  files were being rebuilt by a parallel build. Three reruns (old and new
+  code) passed.

@@ -56,6 +56,13 @@ starts afresh. `tools/wiiu.py` never makes such connections: `find` and
 
 `tools/test_console_tool.py` checks the tool against stand-ins on this PC.
 
+**Console screenshots:** autotest builds save the frame as
+`SD:/wiiu/apps/DreamKartsU/shot-bNNNN-fFFFFF.ppm` at frames 300, 1800, 4200
+and 7200, the frames the host tests shoot ("DKU SHOT" in the log). Fetch them
+with `tools/wiiu.py get wiiu/apps/DreamKartsU/NAME logs/console/shots/NAME`.
+The console runs in real time and the host on a virtual clock, so the same
+frame number is close to, not exactly, the same moment of the race.
+
 ## Every test build: number and log
 
 The number bottom left of the screen is the build. Quote it when reporting.
