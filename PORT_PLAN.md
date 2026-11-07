@@ -405,9 +405,8 @@ At tags `m3`, `m5`, `m6`, `m7`:
   asset download at M4. The rule still stands for game builds: no build
   ever connects to dcvmu.com.
 
-- ~~Network setup~~: plugins copied to the card and enabled 2026-11-07; the
-  console is found and FTP works. **Now:** open and close any app on the
-  console (or HOME and back) to free the jammed Wiiload, then say so.
+- ~~Network setup~~: done 2026-11-07; build 2 sent, run and logged over
+  the network.
 - **Console retest (2026-11-06):** does the newest build (number bottom left)
   cure the water, the stutter and the power-up glitches? Send
   `DreamKartsU-build-NNNN.log` from the SD card's app folder, and a photo of
@@ -693,3 +692,19 @@ At tags `m3`, `m5`, `m6`, `m7`:
   greeting is "220 Hello!"), no test connections to 4299, and
   `test_console_tool.py` fails on any empty connection to its Wiiload
   stand-in. PASS. The jammed plugin clears when the console switches app.
+
+- 2026-11-07: **Build 2 on the console, sent and logged over the network**
+  (send 54 s; live log and card log both complete, clean exit). Aisling
+  played about 10 minutes: title, menus, track select, one race. Numbers:
+  - Title, menus, results: 59.9 fps, no missed frames. Sound: no underruns,
+    music never ran dry.
+  - Race (124 s): 60 fps in only 60 of those seconds; 22 s at 45-59, 36 s at
+    30-44, 6 s below 30. Track select from high up: 19-28 fps.
+  - The limit is the CPU's main core, not the GPU: gpuwait about 0 and
+    gpulate 0 throughout. Both `game` (upstream update plus the TA shim's
+    vertex work) and `draw` (the GX2 backend's conversion) grow with the
+    triangle count: about 1.3 us and 0.9 us per triangle, so 13,000
+    triangles cost about 30 ms. The swap between 60 and 30 fps as the view
+    changes is the stutter.
+  - Next: time the parts inside `game` and `draw`, move the backend's work
+    off core 1, then speed up the hottest loops.
