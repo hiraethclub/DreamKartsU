@@ -4,6 +4,51 @@ Results from the console, one section per tag (PORT_PLAN.md section 4).
 Write what you did, what happened, and add a phone photo for anything
 visual. Then tell Claude Code "results for mN are in TESTING.md".
 
+## Working from the PC
+
+The console and PC stay on the same network, and the SD card stays in the
+console. `tools/wiiu.py` does the rest, using two Aroma plugins and the game's
+own log.
+
+**Once, on the console:**
+
+1. Check `SD:/wiiu/environments/aroma/plugins/` has `wiiload.wps` and
+   `ftpiiu.wps`. If not, add them from the Aroma download page
+   (<https://aroma.foryour.cafe/>). This is the last time the card has to move.
+2. With the card back in the console, press **L + Down + Minus** on the
+   GamePad for the plugin menu. Check Wiiload and FTPiiU are both enabled.
+   Leave "Allow access to system files" off.
+
+**Once, on the PC, with the console on:**
+
+```bash
+tools/wiiu.py find
+```
+
+```bash
+tools/wiiu.py status
+```
+
+If `find` sees nothing, use `tools/wiiu.py set-ip ADDRESS` with the address
+shown in the plugin menu's FTPiiU page. Giving the console a fixed address in
+the router saves doing this again.
+
+**Day to day:**
+
+| Command | What it does |
+|---|---|
+| `tools/wiiu.py dev` | Build, send, start, then show the live log |
+| `tools/wiiu.py run` | Send the current build and start it, without keeping it on the card |
+| `tools/wiiu.py install` | Put the build on the card for the Wii U Menu (close the game first) |
+| `tools/wiiu.py log` | Live log; also saved in `logs/` |
+| `tools/wiiu.py pull-log` | Copy this build's log file to `logs/console/` (`--all` for every build) |
+| `tools/wiiu.py ls`, `get`, `put` | Look at and copy files on the card |
+
+Sending works from the Wii U Menu or a running game. If the live log stays
+empty while the game runs, check that the PC's firewall allows UDP port 4405.
+
+`tools/test_console_tool.py` checks the tool against stand-ins on this PC.
+
 ## Every test build: number and log
 
 The number bottom left of the screen is the build. Quote it when reporting.

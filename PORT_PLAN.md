@@ -405,6 +405,9 @@ At tags `m3`, `m5`, `m6`, `m7`:
   asset download at M4. The rule still stands for game builds: no build
   ever connects to dcvmu.com.
 
+- **Network setup (2026-11-07):** enable the Wiiload and FTPiiU plugins, then
+  run `tools/wiiu.py find` and `status`. Steps: `TESTING.md`, "Working from the
+  PC".
 - **Console retest (2026-11-06):** does the newest build (number bottom left)
   cure the water, the stutter and the power-up glitches? Send
   `DreamKartsU-build-NNNN.log` from the SD card's app folder, and a photo of
@@ -675,3 +678,8 @@ At tags `m3`, `m5`, `m6`, `m7`:
     add one when a Wii U build sees changed sources. "BUILD NNNN" shows bottom
     left (`port/build_overlay.c`); `BUILD_OVERLAY=0` in `Makefile.wiiu` takes
     it off when testing ends.
+- 2026-11-07: **Working from the PC without moving the SD card**
+  (Aisling's request). `tools/wiiu.py` builds, sends and starts builds with
+  Wiiload, reaches the card with FTPiiU and follows the UDP log.
+  `tools/test_console_tool.py` PASS against local stand-ins, including the
+  real `wiiload` tool. Not yet tried against the console's plugins.

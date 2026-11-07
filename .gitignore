@@ -9,3 +9,5 @@
 *.log
 __pycache__/
 /music/
+/logs/
+/.wiiu-console

@@ -27,6 +27,9 @@ milestones and the progress log are in `PORT_PLAN.md`.
 
 ## Layout notes
 
+- `tools/wiiu.py` sends builds to the console and reads its logs over the
+  network (`TESTING.md`, "Working from the PC"). It talks only to the address
+  in `WIIU_IP` or the git-ignored `.wiiu-console`.
 - `upstream/` is the `projects/games/dreamkarts` folder and
   `upstream_common/` is `projects/common`, both from
   richstokes/dreamcast-homebrew at the SHA in `UPSTREAM.md`.
