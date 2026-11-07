@@ -24,8 +24,8 @@
      memory of the frame set that will draw them (backend_frame_memory).
      render.c keeps faces clockwise on its y-down screen: those are
      clockwise here too, so culling drops counter-clockwise (front) faces.
-   - Textures: de-twiddled from texture memory to RGBA8, reading the PVR's
-     16-bit texels little-endian, with the KOS mip chain; each level goes
+   - Textures: de-twiddled from texture memory into GX2 textures of the
+     same 16-bit formats (gx2_format), with the KOS mip chain; each level goes
      through a linear staging surface and GX2CopySurface does the tiling.
      Cached by address, re-uploaded when pvr_txr_load bumps the block's
      generation. Uploads run before the frame's drawing starts: GX2CopySurface
@@ -226,33 +226,30 @@ static uint32_t spread(uint32_t v) {
     return table[v & 1023];
 }
 
-/* One PVR texel (little-endian 16 bits) as RGBA8, bytes r, g, b, a. */
-static uint32_t texel(const uint8_t *p, int fmt) {
-    uint32_t v = p[0] | (uint32_t)p[1] << 8, r, g, b, a;
+/* PVR texels as they are: the GPU samples the same 16-bit formats,
+   little-endian as the PVR stores them, so no texel is converted. Each
+   PVR format packs blue in the low bits; the GX2 format with that packing
+   names it "R", so the component map swaps red and blue back. (Cemu's
+   decoders, LatteTextureLoader.h, for the bit layouts.) They used to be
+   converted to RGBA8 here, about 1.6 ms a texture on the console, the
+   load hitches at the title and race intro. */
+static GX2SurfaceFormat gx2_format(int fmt, uint32_t *comp) {
     switch(fmt & PVR_TXRFMT_FMT_MASK) {
         case PVR_TXRFMT_RGB565:
-            r = (v >> 11) & 31;
-            g = (v >> 5) & 63;
-            b = v & 31;
-            return (r << 3 | r >> 2) << 24 | (g << 2 | g >> 4) << 16 | (b << 3 | b >> 2) << 8 | 255;
+            *comp = GX2_COMP_MAP(GX2_SQ_SEL_B, GX2_SQ_SEL_G, GX2_SQ_SEL_R, GX2_SQ_SEL_1);
+            return GX2_SURFACE_FORMAT_UNORM_R5_G6_B5;
         case PVR_TXRFMT_ARGB4444:
-            a = v >> 12;
-            r = (v >> 8) & 15;
-            g = (v >> 4) & 15;
-            b = v & 15;
-            return r * 17 << 24 | g * 17 << 16 | b * 17 << 8 | a * 17;
+            *comp = GX2_COMP_MAP(GX2_SQ_SEL_B, GX2_SQ_SEL_G, GX2_SQ_SEL_R, GX2_SQ_SEL_A);
+            return GX2_SURFACE_FORMAT_UNORM_R4_G4_B4_A4;
         default:   /* ARGB1555; YUV/VQ unused */
-            a = v >> 15;
-            r = (v >> 10) & 31;
-            g = (v >> 5) & 31;
-            b = v & 31;
-            return (r << 3 | r >> 2) << 24 | (g << 3 | g >> 2) << 16 | (b << 3 | b >> 2) << 8 | (a ? 255 : 0);
+            *comp = GX2_COMP_MAP(GX2_SQ_SEL_B, GX2_SQ_SEL_G, GX2_SQ_SEL_R, GX2_SQ_SEL_A);
+            return GX2_SURFACE_FORMAT_UNORM_R5_G5_B5_A1;
     }
 }
 
 /* A w x h level from PVR order (twiddled: y in the low Morton bit; a
    rectangle is square blocks along its long side) into texture level lv. */
-static void upload_level(GX2Texture *t, int lv, const uint8_t *in, int w, int h, int fmt, bool twiddled) {
+static void upload_level(GX2Texture *t, int lv, const uint8_t *in, int w, int h, bool twiddled) {
     if(cur->nstaging == (int)(sizeof(cur->staging) / sizeof(cur->staging[0]))) return;
     GX2Surface s;
     memset(&s, 0, sizeof(s));
@@ -261,40 +258,44 @@ static void upload_level(GX2Texture *t, int lv, const uint8_t *in, int w, int h,
     s.height = (uint32_t)h;
     s.depth = 1;
     s.mipLevels = 1;
-    s.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+    s.format = t->surface.format;
     s.aa = GX2_AA_MODE1X;
     s.use = GX2_SURFACE_USE_TEXTURE;
     s.tileMode = GX2_TILE_MODE_LINEAR_ALIGNED;
     GX2CalcSurfaceSizeAndAlignment(&s);
-    uint32_t *px = gpu_alloc(s.alignment, s.imageSize);
+    uint16_t *px = gpu_alloc(s.alignment, s.imageSize);
+    DCZeroRange(px, s.imageSize);   /* claim the lines without reading them */
     s.image = px;
-    int edge = w < h ? w : h, mask = edge - 1;
-    for(int y = 0; y < h; y++)
-        for(int x = 0; x < w; x++) {
-            uint32_t i = twiddled ? (uint32_t)((x / edge) + (y / edge)) * edge * edge + (spread(x & mask) << 1) +
-                                        spread(y & mask)
-                                  : (uint32_t)(y * w + x);
-            px[y * s.pitch + x] = texel(in + 2 * i, fmt);
+    const uint16_t *src = (const uint16_t *)in;
+    if(twiddled) {
+        int edge = w < h ? w : h, mask = edge - 1;
+        for(int y = 0; y < h; y++) {
+            uint32_t row = (uint32_t)(y / edge) * edge * edge + spread(y & mask);
+            uint16_t *d = px + y * s.pitch;
+            for(int x = 0; x < w; x++)
+                d[x] = src[row + (uint32_t)(x / edge) * edge * edge + (spread(x & mask) << 1)];
         }
+    }
+    else
+        for(int y = 0; y < h; y++) memcpy(px + y * s.pitch, src + y * w, (size_t)w * 2);
     GX2Invalidate(GX2_INVALIDATE_MODE_CPU_TEXTURE, px, s.imageSize);
     GX2CopySurface(&s, 0, 0, &t->surface, (uint32_t)lv, 0);
     cur->staging[cur->nstaging++] = px;
 }
 
-static GX2Texture *new_texture(int w, int h, int levels) {
+static GX2Texture *new_texture(int w, int h, int levels, int fmt) {
     GX2Texture *t = calloc(1, sizeof(*t));
     t->surface.dim = GX2_SURFACE_DIM_TEXTURE_2D;
     t->surface.width = (uint32_t)w;
     t->surface.height = (uint32_t)h;
     t->surface.depth = 1;
     t->surface.mipLevels = (uint32_t)levels;
-    t->surface.format = GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8;
+    t->surface.format = gx2_format(fmt, &t->compMap);
     t->surface.aa = GX2_AA_MODE1X;
     t->surface.use = GX2_SURFACE_USE_TEXTURE;
     t->surface.tileMode = GX2_TILE_MODE_DEFAULT;
     t->viewNumMips = (uint32_t)levels;
     t->viewNumSlices = 1;
-    t->compMap = GX2_COMP_MAP(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A);
     GX2CalcSurfaceSizeAndAlignment(&t->surface);
     GX2InitTextureRegs(t);
     t->surface.image = gpu_alloc_target(t->surface.alignment, t->surface.imageSize);
@@ -311,19 +312,19 @@ static void upload(tex_entry_t *e, const pvr_poly_cxt_t *c, const pvr_shim_block
     int levels = 1;
     if(c->txr.mipmap)
         for(int s = c->txr.width; s > 1; s >>= 1) levels++;
-    if(!e->tex) e->tex = new_texture(c->txr.width, c->txr.height, levels);
+    if(!e->tex) e->tex = new_texture(c->txr.width, c->txr.height, levels, fmt);
     GX2Texture *t = e->tex;
     if(c->txr.mipmap) {
         /* KOS mip chain: three padding texels, then 1x1, 2x2, ... */
         size_t off = 6;
         for(int lv = levels - 1, s = 1; lv >= 0; lv--, s <<= 1) {
             if(src + off + (size_t)s * s * 2 > end) break;
-            upload_level(t, lv, src + off, s, s, fmt, twiddled);
+            upload_level(t, lv, src + off, s, s, twiddled);
             off += (size_t)s * s * 2;
         }
     }
     else if(src + (size_t)c->txr.width * c->txr.height * 2 <= end) {
-        upload_level(t, 0, src, c->txr.width, c->txr.height, fmt, twiddled);
+        upload_level(t, 0, src, c->txr.width, c->txr.height, twiddled);
     }
     GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, t->surface.image, t->surface.imageSize);
     if(t->surface.mipmaps) GX2Invalidate(GX2_INVALIDATE_MODE_TEXTURE, t->surface.mipmaps, t->surface.mipmapSize);
