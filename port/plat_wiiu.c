@@ -261,34 +261,43 @@ static bool remote(int chan, cont_state_t *out) {
 
 /* ---- Rumble ----
 
-   The maple level 0..7 as a duty cycle. The GamePad plays a bit pattern
-   of up to 120 bits once (VPADControlMotor), so a level is re-sent every
-   REFRESH frames while it lasts; remotes and the Pro Controller have an
-   on/off motor, on from level 2 up. */
+   The maple level 0..7 to a motor that is on or off. The GamePad plays a
+   pattern of up to 120 bits at 120 Hz, once (VPADControlMotor), so a level
+   is re-sent every REFRESH frames while it lasts. It used to be a duty
+   cycle (level / 7 of the bits on, spread out), but on the console nothing
+   was felt (Aisling, build 7): single 8 ms bits are too short to spin the
+   motor up. Now it is solid on from level 2 up, as the remotes and the Pro
+   Controller (on/off motors) always were. Each call's result goes to the
+   log ("DKU RUMBLE"), the first few and every failure. */
 
 #define REFRESH 20
 
 static int rumble_pow[PLAT_PADS], rumble_age[PLAT_PADS];
+static int rumble_logged;
+
+static void rumble_log(int i, int power, int32_t r) {
+    if(rumble_logged < 8 || r < 0) {
+        rumble_logged++;
+        printf("DKU RUMBLE: pad %d level %d -> %d\n", i, power, (int)r);
+    }
+}
 
 static void gamepad_motor(int power) {
-    if(power <= 0) {
+    if(power < 2) {
         VPADStopMotor(VPAD_CHAN_0);
         return;
     }
-    uint8_t pattern[15] = {0};
-    for(int bit = 0, acc = 0; bit < 120; bit++) {
-        acc += power;
-        if(acc >= 7) {
-            acc -= 7;
-            pattern[bit / 8] |= (uint8_t)(0x80 >> (bit % 8));
-        }
-    }
-    VPADControlMotor(VPAD_CHAN_0, pattern, 120);
+    static const uint8_t pattern[15] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    rumble_log(0, power, VPADControlMotor(VPAD_CHAN_0, pattern, 120));
 }
 
 static void motor(int i, int power) {
     if(i == 0) gamepad_motor(power);
-    else WPADControlMotor((WPADChan)(i - 1), power >= 2);
+    else {
+        WPADControlMotor((WPADChan)(i - 1), power >= 2);
+        rumble_log(i, power, 0);
+    }
 }
 
 bool plat_pad(int i, cont_state_t *out) {
